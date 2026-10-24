@@ -174,11 +174,11 @@ impl Op {
             PopN(n) => -(n as i32),
             SetLocal(_) | SetUpval(_) | SetGlobal(_) | CloseUpvals(_) | Neg | Not | BitNot | AddK(_) | SubK(_)
             | MulK(_) | DivK(_) | RemK(_) | AddLocalK(..) | Jump(_) | GetField(_) | ForPrep(..) | ForLoop(..)
-            | IterNext1(..) | IterNext2(..) | ReturnNil | ReturnLocal(_) | JNotEqLL(..) | JNotNeLL(..) | JNotLtLL(..)
-            | JNotLeLL(..) | JNotGtLL(..) | JNotGeLL(..) | JNotEqLK(..) | JNotNeLK(..) | JNotLtLK(..)
-            | JNotLeLK(..) | JNotGtLK(..) | JNotGeLK(..) => 0,
-            Add | Sub | Mul | Div | Rem | Pow | BitAnd | BitOr | BitXor | Shl | Shr | Eq | Ne | Lt | Le | Gt
-            | Ge | JumpIfFalse(_) | JumpIfTrue(_) | And(_) | Or(_) => -1,
+            | IterNext1(..) | IterNext2(..) | ReturnNil | ReturnLocal(_) | JNotEqLL(..) | JNotNeLL(..)
+            | JNotLtLL(..) | JNotLeLL(..) | JNotGtLL(..) | JNotGeLL(..) | JNotEqLK(..) | JNotNeLK(..)
+            | JNotLtLK(..) | JNotLeLK(..) | JNotGtLK(..) | JNotGeLK(..) => 0,
+            Add | Sub | Mul | Div | Rem | Pow | BitAnd | BitOr | BitXor | Shl | Shr | Eq | Ne | Lt | Le | Gt | Ge
+            | JumpIfFalse(_) | JumpIfTrue(_) | And(_) | Or(_) => -1,
             JNotEq(_) | JNotNe(_) | JNotLt(_) | JNotLe(_) | JNotGt(_) | JNotGe(_) | StoreField(_) | InitIndex
             | SetIndex => -2,
             StoreIndex => -3,
@@ -190,12 +190,33 @@ impl Op {
     pub fn jump_offset(&self) -> Option<i32> {
         use Op::*;
         Some(match *self {
-            Jump(o) | JumpIfFalse(o) | JumpIfTrue(o) | And(o) | Or(o) | JNotEq(o) | JNotNe(o) | JNotLt(o)
-            | JNotLe(o) | JNotGt(o) | JNotGe(o) | ForPrep(_, o) | ForLoop(_, o) | IterNext1(_, o)
+            Jump(o)
+            | JumpIfFalse(o)
+            | JumpIfTrue(o)
+            | And(o)
+            | Or(o)
+            | JNotEq(o)
+            | JNotNe(o)
+            | JNotLt(o)
+            | JNotLe(o)
+            | JNotGt(o)
+            | JNotGe(o)
+            | ForPrep(_, o)
+            | ForLoop(_, o)
+            | IterNext1(_, o)
             | IterNext2(_, o) => o,
-            JNotEqLL(_, _, o) | JNotNeLL(_, _, o) | JNotLtLL(_, _, o) | JNotLeLL(_, _, o) | JNotGtLL(_, _, o)
-            | JNotGeLL(_, _, o) | JNotEqLK(_, _, o) | JNotNeLK(_, _, o) | JNotLtLK(_, _, o)
-            | JNotLeLK(_, _, o) | JNotGtLK(_, _, o) | JNotGeLK(_, _, o) => o as i32,
+            JNotEqLL(_, _, o)
+            | JNotNeLL(_, _, o)
+            | JNotLtLL(_, _, o)
+            | JNotLeLL(_, _, o)
+            | JNotGtLL(_, _, o)
+            | JNotGeLL(_, _, o)
+            | JNotEqLK(_, _, o)
+            | JNotNeLK(_, _, o)
+            | JNotLtLK(_, _, o)
+            | JNotLeLK(_, _, o)
+            | JNotGtLK(_, _, o)
+            | JNotGeLK(_, _, o) => o as i32,
             _ => return None,
         })
     }

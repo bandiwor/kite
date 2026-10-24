@@ -259,7 +259,8 @@ impl Vm {
         let t0 = std::time::Instant::now();
         let toks = lexer::lex(&source.text);
         let t_lex = t0.elapsed();
-        let ast = parser::parse(&source.text, &toks, &mut self.interner).map_err(|d| err(ErrorKind::Syntax, d, &source))?;
+        let ast =
+            parser::parse(&source.text, &toks, &mut self.interner).map_err(|d| err(ErrorKind::Syntax, d, &source))?;
         let t_parse = t0.elapsed();
         if self.opts.dump_ast {
             eprintln!("{}", ast.dump(&self.interner, &source.text));
@@ -485,7 +486,10 @@ impl Vm {
                 let inst = callee.as_gc_unchecked::<Instance>();
                 let hook = inst.ty.hook(Hook::Call);
                 if hook.is_nil() {
-                    return Err(rt_err(format!("struct '{}' instances are not callable (no `call` method)", inst.ty.name.as_str())));
+                    return Err(rt_err(format!(
+                        "struct '{}' instances are not callable (no `call` method)",
+                        inst.ty.name.as_str()
+                    )));
                 }
                 if self.sp.add(2) >= self.stack_end {
                     return Err(rt_err("stack overflow"));
@@ -575,12 +579,7 @@ impl Vm {
                 return self.call_value(f, &[a, b]);
             }
         }
-        Err(rt_err(format!(
-            "invalid operands for '{}': {} and {}",
-            op.symbol(),
-            self.type_of(a),
-            self.type_of(b)
-        )))
+        Err(rt_err(format!("invalid operands for '{}': {} and {}", op.symbol(), self.type_of(a), self.type_of(b))))
     }
 
     /// Type name for diagnostics (struct name for instances).
@@ -749,7 +748,11 @@ impl Vm {
                     return self.get_field_slow(obj, k);
                 }
                 let inst = unsafe { obj.as_gc_unchecked::<Instance>() };
-                Err(rt_err(format!("struct '{}' cannot be indexed by {} (no `get` method)", inst.ty.name.as_str(), self.type_of(key))))
+                Err(rt_err(format!(
+                    "struct '{}' cannot be indexed by {} (no `get` method)",
+                    inst.ty.name.as_str(),
+                    self.type_of(key)
+                )))
             }
             _ => Err(rt_err(format!("cannot index a value of type {}", self.type_of(obj)))),
         }
@@ -770,7 +773,11 @@ impl Vm {
                     return self.set_field_slow(obj, k, v);
                 }
                 let inst = unsafe { obj.as_gc_unchecked::<Instance>() };
-                Err(rt_err(format!("struct '{}' cannot be indexed by {} (no `set` method)", inst.ty.name.as_str(), self.type_of(key))))
+                Err(rt_err(format!(
+                    "struct '{}' cannot be indexed by {} (no `set` method)",
+                    inst.ty.name.as_str(),
+                    self.type_of(key)
+                )))
             }
             _ => Err(rt_err(format!("cannot assign into a value of type {}", self.type_of(obj)))),
         }
@@ -930,7 +937,12 @@ impl Vm {
                     let r = self.call_value(hook, &[v])?;
                     match r.as_str() {
                         Some(s) => out.push_str(s.as_str()),
-                        None => return Err(rt_err(format!("`str` of struct '{}' must return a string", inst.ty.name.as_str()))),
+                        None => {
+                            return Err(rt_err(format!(
+                                "`str` of struct '{}' must return a string",
+                                inst.ty.name.as_str()
+                            )))
+                        }
                     }
                     return Ok(());
                 }
@@ -1664,7 +1676,10 @@ impl Vm {
                         let mut t = top!().as_gc_unchecked::<Table>();
                         let before = t.mem_size();
                         if let Err(e) = t.set(k, v) {
-                            throw!("{}", if e == KeyError::Nil { "table key cannot be nil" } else { "table key cannot be NaN" });
+                            throw!(
+                                "{}",
+                                if e == KeyError::Nil { "table key cannot be nil" } else { "table key cannot be NaN" }
+                            );
                         }
                         self.heap.bytes += t.mem_size().saturating_sub(before);
                     }

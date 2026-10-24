@@ -190,7 +190,10 @@ impl Table {
     }
 
     pub fn mem_size(&self) -> usize {
-        std::mem::size_of::<Table>() + self.arr.capacity() * 8 + self.map.entries.capacity() * 16 + self.map.index.capacity() * 4
+        std::mem::size_of::<Table>()
+            + self.arr.capacity() * 8
+            + self.map.entries.capacity() * 16
+            + self.map.index.capacity() * 4
     }
 
     /// Number of entries (array part + hash part).

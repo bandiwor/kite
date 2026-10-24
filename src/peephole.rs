@@ -42,7 +42,12 @@ pub fn optimize(code: Vec<Op>, offsets: Vec<u32>, consts: &[Value]) -> (Vec<Op>,
     optimize_with(&mut Scratch::default(), code, offsets, consts)
 }
 
-pub fn optimize_with(sc: &mut Scratch, mut code: Vec<Op>, mut offsets: Vec<u32>, consts: &[Value]) -> (Vec<Op>, Vec<u32>) {
+pub fn optimize_with(
+    sc: &mut Scratch,
+    mut code: Vec<Op>,
+    mut offsets: Vec<u32>,
+    consts: &[Value],
+) -> (Vec<Op>, Vec<u32>) {
     pass(sc, &mut code, &mut offsets, consts);
     (code, offsets)
 }
@@ -352,7 +357,8 @@ mod tests {
 
     #[test]
     fn compare_jump() {
-        let code = vec![Op::GetLocal(0), Op::GetLocal(1), Op::Lt, Op::JumpIfFalse(2), Op::Nil, Op::Pop, Op::Nil, Op::Return];
+        let code =
+            vec![Op::GetLocal(0), Op::GetLocal(1), Op::Lt, Op::JumpIfFalse(2), Op::Nil, Op::Pop, Op::Nil, Op::Return];
         let out = opt(code);
         assert_eq!(out[0], Op::JNotLtLL(0, 1, 0));
     }

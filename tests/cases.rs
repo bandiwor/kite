@@ -48,7 +48,9 @@ fn expectations(src: &str) -> (Vec<String>, Option<String>) {
     let mut err = None;
     for l in src.lines() {
         if let Some(i) = l.find("// expect:") {
-            lines.push(l[i + "// expect:".len()..].strip_prefix(' ').unwrap_or(&l[i + "// expect:".len()..]).to_string());
+            lines.push(
+                l[i + "// expect:".len()..].strip_prefix(' ').unwrap_or(&l[i + "// expect:".len()..]).to_string(),
+            );
         } else if let Some(i) = l.find("// error:") {
             err = Some(l[i + "// error:".len()..].trim().to_string());
         }
@@ -60,7 +62,12 @@ fn check(path: &PathBuf, no_opt: bool, stress: bool) -> Result<(), String> {
     let src = std::fs::read_to_string(path).unwrap();
     let (expected, expected_err) = expectations(&src);
     let out = run(&src, no_opt, stress);
-    let label = format!("{} [{}{}]", path.file_name().unwrap().to_string_lossy(), if no_opt { "no-opt " } else { "" }, if stress { "gc-stress" } else { "" });
+    let label = format!(
+        "{} [{}{}]",
+        path.file_name().unwrap().to_string_lossy(),
+        if no_opt { "no-opt " } else { "" },
+        if stress { "gc-stress" } else { "" }
+    );
     match (&expected_err, &out.error) {
         (Some(want), Some(got)) => {
             if !got.contains(want.as_str()) {
@@ -68,7 +75,9 @@ fn check(path: &PathBuf, no_opt: bool, stress: bool) -> Result<(), String> {
             }
         }
         (Some(want), None) => return Err(format!("{}: expected error {:?} but the program succeeded", label, want)),
-        (None, Some(got)) => return Err(format!("{}: unexpected error:\n{}\n--- stdout so far:\n{}", label, got, out.stdout)),
+        (None, Some(got)) => {
+            return Err(format!("{}: unexpected error:\n{}\n--- stdout so far:\n{}", label, got, out.stdout))
+        }
         (None, None) => {}
     }
     let actual: Vec<&str> = out.stdout.lines().collect();

@@ -85,39 +85,93 @@ pub enum Node {
     False,
     Num(f64),
     /// Raw literal text between the quotes (escapes still unprocessed).
-    Str { start: u32, len: u32 },
+    Str {
+        start: u32,
+        len: u32,
+    },
     Ident(Sym),
     /// Bare key inside a table literal (`{ name: 1 }`).
     Key(Sym),
-    Unary { op: UnOp, expr: NodeId },
-    Binary { op: BinOp, lhs: NodeId, rhs: NodeId },
+    Unary {
+        op: UnOp,
+        expr: NodeId,
+    },
+    Binary {
+        op: BinOp,
+        lhs: NodeId,
+        rhs: NodeId,
+    },
     /// `target = value` or, when `op` is set, `target op= value`.
-    Assign { op: Option<BinOp>, target: NodeId, value: NodeId },
+    Assign {
+        op: Option<BinOp>,
+        target: NodeId,
+        value: NodeId,
+    },
     /// `args[0..]` are the arguments.
-    Call { callee: NodeId, args: ListRef },
+    Call {
+        callee: NodeId,
+        args: ListRef,
+    },
     /// `recv:name(args)`; `args[0]` is the receiver.
-    MethodCall { name: Sym, args: ListRef },
-    Field { obj: NodeId, name: Sym },
-    Index { obj: NodeId, index: NodeId },
+    MethodCall {
+        name: Sym,
+        args: ListRef,
+    },
+    Field {
+        obj: NodeId,
+        name: Sym,
+    },
+    Index {
+        obj: NodeId,
+        index: NodeId,
+    },
     /// Array literal; `items` are node ids.
-    Array { items: ListRef },
+    Array {
+        items: ListRef,
+    },
     /// Table literal; `entries` is `[key, value, key, value, ...]`.
-    Table { entries: ListRef },
+    Table {
+        entries: ListRef,
+    },
     Func(FuncId),
-    If { cond: NodeId, then: NodeId, els: NodeId },
-    Block { stmts: ListRef, tail: NodeId },
-    Loop { body: NodeId },
-    While { cond: NodeId, body: NodeId },
+    If {
+        cond: NodeId,
+        then: NodeId,
+        els: NodeId,
+    },
+    Block {
+        stmts: ListRef,
+        tail: NodeId,
+    },
+    Loop {
+        body: NodeId,
+    },
+    While {
+        cond: NodeId,
+        body: NodeId,
+    },
     For(ForId),
     Break(NodeId),
     Continue,
     Return(NodeId),
-    Var { name: Sym, init: NodeId },
-    Const { name: Sym, init: NodeId },
+    Var {
+        name: Sym,
+        init: NodeId,
+    },
+    Const {
+        name: Sym,
+        init: NodeId,
+    },
     /// `struct Name { fields }`; `fields` are raw `Sym` values.
-    Struct { name: Sym, fields: ListRef },
+    Struct {
+        name: Sym,
+        fields: ListRef,
+    },
     /// `impl Target { methods }`; `methods` are `Func` node ids.
-    Impl { target: NodeId, methods: ListRef },
+    Impl {
+        target: NodeId,
+        methods: ListRef,
+    },
 }
 
 const _: () = assert!(std::mem::size_of::<Node>() == 16);

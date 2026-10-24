@@ -266,15 +266,17 @@ impl<'a> Compiler<'a> {
         }
         self.emit(Op::Return);
         let fb = self.fns.pop().unwrap();
-        let name: Rc<str> =
-            if def.name.is_none() { Rc::from("<anon>") } else { Rc::from(self.interner.get(def.name)) };
+        let name: Rc<str> = if def.name.is_none() { Rc::from("<anon>") } else { Rc::from(self.interner.get(def.name)) };
         self.finish(fb, name, arity as u8, info)
     }
 
     fn finish(&mut self, fb: FnBuilder, name: Rc<str>, arity: u8, info: &FuncInfo) -> Gc<Proto> {
         let FnBuilder { code, offsets, consts, max_depth, .. } = fb;
-        let (code, offsets) =
-            if self.opts.optimize { peephole::optimize_with(&mut self.scratch, code, offsets, &consts) } else { (code, offsets) };
+        let (code, offsets) = if self.opts.optimize {
+            peephole::optimize_with(&mut self.scratch, code, offsets, &consts)
+        } else {
+            (code, offsets)
+        };
         debug_assert_eq!(code.len(), offsets.len());
         let proto = Proto {
             hdr: Header::new(Kind::Proto),

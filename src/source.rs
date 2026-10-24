@@ -125,10 +125,8 @@ impl fmt::Display for KiteError {
             let trail = if to < chars.len() { "…" } else { "" };
             writeln!(f, " {} |", pad)?;
             writeln!(f, " {} | {}{}{}", gutter, lead, shown, trail)?;
-            let prefix: String = chars[from..(col as usize - 1).max(from)]
-                .iter()
-                .map(|&c| if c == '\t' { '\t' } else { ' ' })
-                .collect();
+            let prefix: String =
+                chars[from..(col as usize - 1).max(from)].iter().map(|&c| if c == '\t' { '\t' } else { ' ' }).collect();
             let lead_pad = if from > 0 { " " } else { "" };
             let width = {
                 let line_start = d.start as usize;

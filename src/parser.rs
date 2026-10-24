@@ -33,16 +33,8 @@ pub struct Parser<'a> {
 /// Parse a whole program.  The root is a `Block` whose tail (if any) is the
 /// value of the program.
 pub fn parse(src: &str, toks: &[Token], interner: &mut Interner) -> Result<Ast, Vec<Diag>> {
-    let mut p = Parser {
-        src,
-        toks,
-        pos: 0,
-        interner,
-        ast: Ast::new(),
-        scratch: Vec::new(),
-        errors: Vec::new(),
-        depth: 0,
-    };
+    let mut p =
+        Parser { src, toks, pos: 0, interner, ast: Ast::new(), scratch: Vec::new(), errors: Vec::new(), depth: 0 };
     p.ast.nodes.reserve(toks.len() / 2);
     p.ast.spans.reserve(toks.len() / 2);
     let root = p.parse_program();
@@ -286,8 +278,18 @@ impl<'a> Parser<'a> {
                     return;
                 }
                 T::RBrace => return,
-                T::Var | T::Const | T::Fn | T::Struct | T::Impl | T::If | T::While | T::Loop | T::For
-                | T::Return | T::Break | T::Continue
+                T::Var
+                | T::Const
+                | T::Fn
+                | T::Struct
+                | T::Impl
+                | T::If
+                | T::While
+                | T::Loop
+                | T::For
+                | T::Return
+                | T::Break
+                | T::Continue
                     if self.pos > start =>
                 {
                     return
@@ -408,7 +410,8 @@ impl<'a> Parser<'a> {
                 let name = self.expect_ident("after `const`")?;
                 if !self.eat(T::Eq) {
                     let found = self.describe_current();
-                    return self.err(format!("expected `=` in const declaration (constants need a value), found {}", found));
+                    return self
+                        .err(format!("expected `=` in const declaration (constants need a value), found {}", found));
                 }
                 let init = self.parse_expr()?;
                 self.name_function(init, name);
@@ -803,7 +806,9 @@ impl<'a> Parser<'a> {
             T::Fn => {
                 self.pos += 1;
                 if self.kind() == T::Ident {
-                    return self.err("named function declarations are statements; use `fn (..) {..}` for a function expression");
+                    return self.err(
+                        "named function declarations are statements; use `fn (..) {..}` for a function expression",
+                    );
                 }
                 self.parse_fn_rest(Sym::NONE, pos)
             }
@@ -1003,7 +1008,9 @@ mod tests {
 
     #[test]
     fn statements() {
-        assert!(!dump("fn f(a, b) { return a + b; } const g = |x| => x; const l = loop { break 1; };").starts_with("ERR"));
+        assert!(
+            !dump("fn f(a, b) { return a + b; } const g = |x| => x; const l = loop { break 1; };").starts_with("ERR")
+        );
         assert!(!dump("for i in 0..10 { } for k, v in t { } while a < 2 { continue; }").starts_with("ERR"));
         assert!(!dump("struct P { x, y } impl P { fn new(self, a) { } }").starts_with("ERR"));
     }

@@ -66,7 +66,9 @@ pub fn install(vm: &mut Vm) {
             ("log2", 1, |_, a| num1(a, "math.log2", f64::log2)),
             ("log10", 1, |_, a| num1(a, "math.log10", f64::log10)),
             ("sign", 1, |_, a| num1(a, "math.sign", |x| if x == 0.0 || x.is_nan() { x } else { x.signum() })),
-            ("atan2", 2, |vm, a| Ok(Value::num(arg_num(vm, a, 0, "math.atan2")?.atan2(arg_num(vm, a, 1, "math.atan2")?)))),
+            ("atan2", 2, |vm, a| {
+                Ok(Value::num(arg_num(vm, a, 0, "math.atan2")?.atan2(arg_num(vm, a, 1, "math.atan2")?)))
+            }),
             ("pow", 2, |vm, a| Ok(Value::num(arg_num(vm, a, 0, "math.pow")?.powf(arg_num(vm, a, 1, "math.pow")?)))),
             ("min", -1, |vm, a| minmax(vm, a, "math.min", true)),
             ("max", -1, |vm, a| minmax(vm, a, "math.max", false)),
@@ -273,7 +275,11 @@ fn to_num(vm: &mut Vm, a: &[Value]) -> R {
         let t = s.as_str().trim();
         let parsed = crate::text::parse_number(t)
             .or_else(|| t.strip_prefix('-').and_then(crate::text::parse_number).map(|n| -n))
-            .or_else(|| t.parse::<f64>().ok().filter(|_| t.chars().next().is_some_and(|c| c.is_ascii_digit() || c == '.' || c == '+')));
+            .or_else(|| {
+                t.parse::<f64>()
+                    .ok()
+                    .filter(|_| t.chars().next().is_some_and(|c| c.is_ascii_digit() || c == '.' || c == '+'))
+            });
         return Ok(parsed.map_or(Value::NIL, Value::num));
     }
     if v.is_bool() {
@@ -533,7 +539,11 @@ fn str_sub(vm: &mut Vm, a: &[Value]) -> R {
     if start >= end {
         return Ok(vm.new_string(""));
     }
-    let r: String = if text.is_ascii() { text[start..end].to_string() } else { text.chars().skip(start).take(end - start).collect() };
+    let r: String = if text.is_ascii() {
+        text[start..end].to_string()
+    } else {
+        text.chars().skip(start).take(end - start).collect()
+    };
     Ok(vm.new_string(r))
 }
 
@@ -542,7 +552,8 @@ fn str_find(vm: &mut Vm, a: &[Value]) -> R {
     let needle = arg_str(vm, a, 1, "string.find")?;
     let text = s.as_str();
     let start = if a.len() > 2 { clamp_index(arg_num(vm, a, 2, "string.find")?.trunc(), char_count(text)) } else { 0 };
-    let byte_start = if text.is_ascii() { start } else { text.char_indices().nth(start).map_or(text.len(), |(b, _)| b) };
+    let byte_start =
+        if text.is_ascii() { start } else { text.char_indices().nth(start).map_or(text.len(), |(b, _)| b) };
     match text[byte_start..].find(needle.as_str()) {
         Some(off) => {
             let b = byte_start + off;
