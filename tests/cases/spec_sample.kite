@@ -1,0 +1,19 @@
+// The snippet from the language sketch, verbatim.
+const PI = 3.14;
+var x = 10;
+x += 10;
+print(PI, x);   // expect: 3.14 20
+
+const val = loop {
+       break 42;
+}
+
+while val < 10 {
+     continue; break;
+}
+print(val);   // expect: 42
+
+fn add(a, b) {
+        return a + b;
+}
+print(add(1, 2));   // expect: 3

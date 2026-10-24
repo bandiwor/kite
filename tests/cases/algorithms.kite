@@ -1,0 +1,130 @@
+// classic algorithms with known answers
+
+// n-queens: number of solutions
+fn queens(n) {
+    const cols = [];
+    var count = 0;
+    fn safe(row, col) {
+        for r in 0..row {
+            const c = cols[r];
+            if c == col || c - col == r - row || c - col == row - r { return false; }
+        }
+        true
+    }
+    fn place(row) {
+        if row == n { count += 1; return nil; }
+        for col in 0..n {
+            if safe(row, col) {
+                cols[row] = col;
+                place(row + 1);
+            }
+        }
+    }
+    place(0);
+    count
+}
+print(queens(6), queens(8));   // expect: 4 92
+
+// sum of primes below 1000
+var sum = 0;
+for n in 2..1000 {
+    var prime = true;
+    var d = 2;
+    while d * d <= n {
+        if n % d == 0 { prime = false; break; }
+        d += 1;
+    }
+    if prime { sum += n; }
+}
+print(sum);   // expect: 76127
+
+// longest Collatz chain under 10000
+var best = 0; var best_n = 0;
+for n in 1..10000 {
+    var steps = 0; var m = n;
+    while m != 1 {
+        m = if m % 2 == 0 { m / 2 } else { 3 * m + 1 };
+        steps += 1;
+    }
+    if steps > best { best = steps; best_n = n; }
+}
+print(best_n, best);   // expect: 6171 261
+
+// towers of hanoi move count, ackermann
+fn hanoi(n, from, to, via) { if n == 0 { 0 } else { hanoi(n - 1, from, via, to) + 1 + hanoi(n - 1, via, to, from) } }
+print(hanoi(10, "a", "c", "b"));   // expect: 1023
+fn ack(m, n) { if m == 0 { n + 1 } else if n == 0 { ack(m - 1, 1) } else { ack(m - 1, ack(m, n - 1)) } }
+print(ack(2, 3), ack(3, 3));   // expect: 9 61
+
+// permutations of 6 distinct items
+fn permutations(items) {
+    if len(items) <= 1 { return [items]; }
+    const out = [];
+    for i in 0..len(items) {
+        const rest = [];
+        for j in 0..len(items) { if j != i { push(rest, items[j]); } }
+        for p in permutations(rest) {
+            const q = [items[i]];
+            for e in p { push(q, e); }
+            push(out, q);
+        }
+    }
+    out
+}
+const perms = permutations([1, 2, 3, 4, 5, 6]);
+print(len(perms), perms[0], perms[719]);   // expect: 720 [1, 2, 3, 4, 5, 6] [6, 5, 4, 3, 2, 1]
+
+// matrix multiplication
+fn matmul(a, b) {
+    const n = len(a);
+    const c = [];
+    for i in 0..n {
+        const row = [];
+        for j in 0..n {
+            var s = 0;
+            for k in 0..n { s += a[i][k] * b[k][j]; }
+            push(row, s);
+        }
+        push(c, row);
+    }
+    c
+}
+print(matmul([[1, 2], [3, 4]], [[5, 6], [7, 8]]));   // expect: [[19, 22], [43, 50]]
+
+// gcd / lcm / pascal / reverse words / bubble sort
+fn gcd(a, b) { if b == 0 { a } else { gcd(b, a % b) } }
+print(gcd(1071, 462), 1071 * 462 / gcd(1071, 462));   // expect: 21 23562
+var row = [1];
+for i in 0..10 {
+    const next = [1];
+    for j in 1..len(row) { push(next, row[j - 1] + row[j]); }
+    push(next, 1);
+    row = next;
+}
+print(row);   // expect: [1, 10, 45, 120, 210, 252, 210, 120, 45, 10, 1]
+print(string.join(map(reduce("the quick brown fox":split(" "), |acc, w| => { insert(acc, 0, w); acc }, []), |w| => w), " "));   // expect: fox brown quick the
+const data = [5, 2, 9, 1, 5, 6, 0, -3];
+for i in 0..len(data) {
+    for j in 0..len(data) - i - 1 {
+        if data[j] > data[j + 1] { const t = data[j]; data[j] = data[j + 1]; data[j + 1] = t; }
+    }
+}
+print(data);   // expect: [-3, 0, 1, 2, 5, 5, 6, 9]
+
+// memoised fibonacci with a table, big values stay exact up to 2^53
+const memo = {};
+fn mfib(n) {
+    if n < 2 { return n; }
+    if has(memo, n) { return memo[n]; }
+    const v = mfib(n - 1) + mfib(n - 2);
+    memo[n] = v;
+    v
+}
+print(mfib(78));   // expect: 8944394323791464
+
+// string building and character counting
+var vowels = 0;
+for ch in "the quick brown fox jumps over the lazy dog" {
+    if ch == "a" || ch == "e" || ch == "i" || ch == "o" || ch == "u" { vowels += 1; }
+}
+print(vowels);   // expect: 11
