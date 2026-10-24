@@ -1,0 +1,81 @@
+const t = { a: 1, b: 2, c: 3 };
+var n = 0;
+for k, v in t { n += 1; if n < 20 { t["k" + n] = n; } }
+print(n >= 3, len(t));
+
+const cyc = { name: "loop" };
+cyc.self = cyc;
+print(cyc);
+
+struct Bad { x }
+impl Bad { fn str(self) { 42 } }
+print(pcall(print, Bad(1))[1]);
+
+const arr = [1, 2, 3];
+for i, v in arr { if i == 0 { remove(arr, 0); } }
+print(arr);
+
+// deleting every key while iterating
+const m = {};
+for i in 0..50 { m["k" + i] = i; }
+for k in keys(m) { m[k] = nil; }
+print(len(m));
+
+// nil in the middle of an array literal is dropped by push, kept by literal?
+const holes = [1, nil, 3];
+print(len(holes), holes[0], holes[1], holes[2]);
+
+// assigning into a far index
+const sparse = [];
+sparse[5] = "x";
+print(len(sparse), sparse[5], sparse[0]);
+sparse[0] = "a"; sparse[1] = "b"; sparse[2] = "c"; sparse[3] = "d"; sparse[4] = "e";
+print(sparse);
+
+// negative and fractional keys
+const odd = {};
+odd[-1] = "neg"; odd[0.5] = "half"; odd[1e300] = "big";
+print(odd[-1], odd[0.5], odd[1e300], odd[2]);
+
+// a string key and a number key never collide
+const mix = { "1": "str", [1]: "num" };
+print(mix["1"], mix[1]);
+
+// chained comparisons of different types are false, not errors (==) / errors (<)
+print(1 == "1", nil == 0);
+print(pcall(|| => 1 < "a")[1]);
+print(pcall(|| => nil + 1)[1]);
+print(pcall(|| => [] + [])[1]);
+print(pcall(|| => undefined_fn())[1]);
+print(pcall(|| => (5)(1))[1]);
+print(pcall(|| => "abc".x)[1]);
+print(pcall(|| => nil.x)[1]);
+print(pcall(|| => nil[0])[1]);
+print(pcall(|| => len(5))[1]);
+print(pcall(|| => push(5, 1))[1]);
+print(pcall(|| => for i in 5 { })[1]);
+print(pcall(|| => for i in "a".."b" { })[1]);
+
+// expect: true 22
+// expect: {name: "loop", self: {name: "loop", self: {name: "loop", self: {name: "loop", self: {name: "loop", self: {name: "loop", self: {name: "loop", self: {...}}}}}}}}
+// expect: `str` of struct 'Bad' must return a string
+// expect: [2, 3]
+// expect: 0
+// expect: 2 1 nil 3
+// expect: 1 x nil
+// expect: ["a", "b", "c", "d", "e", "x"]
+// expect: neg half big nil
+// expect: str num
+// expect: false false
+// expect: cannot compare number and string
+// expect: invalid operands for '+': nil and number
+// expect: invalid operands for '+': table and table
+// expect: undefined variable 'undefined_fn'
+// expect: cannot call a value of type number
+// expect: cannot read field 'x' of string
+// expect: cannot read field 'x' of nil
+// expect: cannot index a value of type nil
+// expect: len: cannot take the length of number
+// expect: push: argument 1 must be a table, got number
+// expect: cannot iterate over number
+// expect: range bounds must be numbers, got string and string

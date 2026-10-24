@@ -1640,11 +1640,15 @@ impl Vm {
                         push!(Value::from(t));
                         gc_check!();
                     }
-                    Op::Append => {
+                    Op::Append(i) => {
                         let v = pop!();
                         let mut t = top!().as_gc_unchecked::<Table>();
                         let before = t.mem_size();
-                        t.push(v);
+                        if t.arr.len() == i as usize {
+                            t.push(v);
+                        } else {
+                            let _ = t.set(Value::num(i as f64), v);
+                        }
                         self.heap.bytes += t.mem_size().saturating_sub(before);
                     }
                     Op::InitField(k) => {

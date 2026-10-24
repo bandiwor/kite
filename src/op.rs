@@ -122,8 +122,8 @@ pub enum Op {
     // ---- tables, fields, structs ----
     /// New table with room for `n` array items.
     NewTable(u16),
-    /// `[t, v] -> [t]`  (array literal element)
-    Append,
+    /// `[t, v] -> [t]`  (array literal element number `i`; a `nil` leaves a hole)
+    Append(u16),
     /// `[t, v] -> [t]`  (table literal `name: v`)
     InitField(u32),
     /// `[t, k, v] -> [t]`  (table literal `[k]: v`)
@@ -169,7 +169,7 @@ impl Op {
             Nil | True | False | Const(_) | Dup | GetLocal(_) | GetUpval(_) | GetGlobal(_) | Closure(_)
             | NewTable(_) | Struct(_) | GetMethod(_) | AddLL(..) | SubLL(..) | MulLL(..) | GetLocalField(..) => 1,
             Dup2 | GetLocal2(..) => 2,
-            Pop | StoreLocal(_) | StoreUpval(_) | StoreGlobal(_) | DefGlobal(_) | Append | InitField(_)
+            Pop | StoreLocal(_) | StoreUpval(_) | StoreGlobal(_) | DefGlobal(_) | Append(_) | InitField(_)
             | SetField(_) | GetIndex | DefMethod(_) | Return => -1,
             PopN(n) => -(n as i32),
             SetLocal(_) | SetUpval(_) | SetGlobal(_) | CloseUpvals(_) | Neg | Not | BitNot | AddK(_) | SubK(_)

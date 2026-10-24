@@ -108,23 +108,37 @@ impl fmt::Display for KiteError {
             let (line, col) = self.source.line_col(d.start);
             writeln!(f, "{}: {}", label, d.msg)?;
             writeln!(f, "  --> {}:{}:{}", self.source.name, line, col)?;
-            let text = self.source.line_text(line);
+            let full = self.source.line_text(line);
             let gutter = line.to_string();
             let pad = " ".repeat(gutter.len());
+            // very long lines: show a window around the error
+            let chars: Vec<char> = full.chars().collect();
+            let (from, to) = if chars.len() > 100 {
+                let c = col as usize - 1;
+                let from = c.saturating_sub(40);
+                (from, (from + 100).min(chars.len()))
+            } else {
+                (0, chars.len())
+            };
+            let shown: String = chars[from..to].iter().collect();
+            let lead = if from > 0 { "…" } else { "" };
+            let trail = if to < chars.len() { "…" } else { "" };
             writeln!(f, " {} |", pad)?;
-            writeln!(f, " {} | {}", gutter, text)?;
-            // caret line: expand tabs as-is so the caret lines up
-            let prefix: String =
-                text.chars().take(col as usize - 1).map(|c| if c == '\t' { '\t' } else { ' ' }).collect();
+            writeln!(f, " {} | {}{}{}", gutter, lead, shown, trail)?;
+            let prefix: String = chars[from..(col as usize - 1).max(from)]
+                .iter()
+                .map(|&c| if c == '\t' { '\t' } else { ' ' })
+                .collect();
+            let lead_pad = if from > 0 { " " } else { "" };
             let width = {
                 let line_start = d.start as usize;
                 let take = (d.len as usize).max(1);
                 let slice_end = (line_start + take).min(self.source.text.len());
                 let seg = self.source.text.get(line_start..slice_end).unwrap_or("");
                 let seg = seg.split('\n').next().unwrap_or("");
-                seg.chars().count().max(1)
+                seg.chars().count().clamp(1, 60)
             };
-            write!(f, " {} | {}{}", pad, prefix, "^".repeat(width))?;
+            write!(f, " {} | {}{}{}", pad, lead_pad, prefix, "^".repeat(width))?;
         }
         for t in &self.trace {
             write!(f, "\n{}", t)?;
