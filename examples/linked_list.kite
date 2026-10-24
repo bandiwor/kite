@@ -1,0 +1,31 @@
+// A singly linked list built from structs and a recursive structure.
+struct Node { value, next }
+
+fn push_front(list, v) { Node(v, list) }
+
+fn to_array(list) {
+    const out = [];
+    var cur = list;
+    while cur != nil {
+        push(out, cur.value);
+        cur = cur.next;
+    }
+    out
+}
+
+fn reverse(list) {
+    var prev = nil;
+    var cur = list;
+    while cur != nil {
+        const next = cur.next;
+        cur.next = prev;
+        prev = cur;
+        cur = next;
+    }
+    prev
+}
+
+var list = nil;
+for i in 1..6 { list = push_front(list, i * i); }
+print(to_array(list));
+print(to_array(reverse(list)));

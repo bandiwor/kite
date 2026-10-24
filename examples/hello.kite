@@ -1,0 +1,35 @@
+// Kite in one screen.
+const PI = 3.14159;
+var radius = 2;
+radius *= 1.5;
+print("area:", PI * radius ** 2);
+
+// Everything is an expression: `if`, blocks and loops all produce values.
+const size = if radius > 2 { "big" } else { "small" };
+print("circle is", size);
+
+const first_square_over_50 = loop {
+    var n = 1;
+    while n * n <= 50 { n += 1; }
+    break n * n;
+};
+print("first square over 50:", first_square_over_50);
+
+// Functions, lambdas and closures.
+fn add(a, b) { return a + b; }
+const twice = |f, x| => f(f(x));
+print(add(2, 3), twice(|v| => v * 3, 7));
+
+fn counter() {
+    var n = 0;
+    return || => { n += 1; n };
+}
+const next_id = counter();
+print(next_id(), next_id(), next_id());
+
+// Tables: arrays and dictionaries are the same type.
+const user = { name: "Ada", langs: ["kite", "rust"] };
+user.age = 36;
+push(user.langs, "c");
+print(user);
+for i, lang in user.langs { print(i, lang); }

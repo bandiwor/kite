@@ -1,0 +1,33 @@
+// Structs have fixed fields. There are no classes or inheritance: `impl`
+// attaches plain functions, and a few special names are picked up by the VM
+// (operator overloads, `new`, `destroy`, `str`, ...).
+struct Vec2 { x, y }
+
+impl Vec2 {
+    fn new(self, x, y) {
+        self.x = x;
+        self.y = y;
+    }
+    fn add(a, b) { Vec2(a.x + b.x, a.y + b.y) }
+    fn sub(a, b) { Vec2(a.x - b.x, a.y - b.y) }
+    fn mul(a, b) {
+        // scalar * vector, vector * scalar and the dot product
+        if type(a) == "number" { Vec2(b.x * a, b.y * a) }
+        else if type(b) == "number" { Vec2(a.x * b, a.y * b) }
+        else { a.x * b.x + a.y * b.y }
+    }
+    fn neg(a) { Vec2(-a.x, -a.y) }
+    fn eq(a, b) { a.x == b.x && a.y == b.y }
+    fn str(a) { "(" + a.x + ", " + a.y + ")" }
+    fn length(a) { math.sqrt(a * a) }
+}
+
+const a = Vec2(3, 4);
+const b = Vec2(1, 2);
+print("a + b =", a + b);
+print("a - b =", a - b);
+print("2 * a =", 2 * a, " a * 2 =", a * 2);
+print("a . b =", a * b);
+print("-a    =", -a);
+print("|a|   =", a:length());
+print("a == Vec2(3, 4):", a == Vec2(3, 4));

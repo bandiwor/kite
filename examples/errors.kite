@@ -1,0 +1,12 @@
+// Errors are values you can catch with pcall; uncaught ones print a trace.
+fn parse_age(s) {
+    const n = num(s);
+    if n == nil { error("not a number: " + s) }
+    if n < 0 { error("negative age") }
+    n
+}
+
+for input in ["42", "x1", "-3"] {
+    const r = pcall(parse_age, input);
+    print(input, "->", if r[0] { "ok " + r[1] } else { "error: " + r[1] });
+}

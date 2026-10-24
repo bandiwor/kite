@@ -1,0 +1,24 @@
+// `destroy` runs when the collector finds an instance unreachable, when you
+// call destroy(x) yourself, and for everything still alive at exit.
+struct File { path }
+
+impl File {
+    fn new(self, path) {
+        self.path = path;
+        print("open  ", path);
+    }
+    fn destroy(self) { print("close ", self.path); }
+}
+
+fn work() {
+    const f = File("a.txt");
+    print("working with", f.path);
+}   // f is garbage from here on
+
+work();
+gc();                       // collect now: prints "close  a.txt"
+
+const g = File("b.txt");
+destroy(g);                 // deterministic cleanup
+const h = File("c.txt");    // closed at program exit
+print("done");

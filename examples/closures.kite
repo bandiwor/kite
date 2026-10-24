@@ -1,0 +1,24 @@
+// Closures capture variables, not values, and every loop iteration gets a
+// fresh variable.
+const adders = [];
+for i in 1..4 {
+    push(adders, |x| => x + i);
+}
+print(map(adders, |f| => f(10)));
+
+fn make_account(balance) {
+    const deposit = |n| => { balance += n; balance };
+    const withdraw = |n| => {
+        if n > balance { error("insufficient funds") }
+        balance -= n;
+        balance
+    };
+    return { deposit, withdraw, balance: || => balance };
+}
+
+const acc = make_account(100);
+acc.deposit(50);
+print("balance:", acc.balance());
+const r = pcall(acc.withdraw, 500);
+print("withdraw 500 ->", r[0], r[1]);
+print("withdraw 30  ->", acc.withdraw(30));
