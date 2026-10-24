@@ -8,8 +8,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import fuzz
 
 BIN = os.path.join(os.path.dirname(__file__), "..", "target", "release", "kite")
-EXPR = {"num", "var", "bin", "mod", "if", "call", "callv", "block", "loopval"}
-COND = {"cmp", "and", "or", "not"}
+EXPR = {"num", "var", "bin", "mod", "if", "call", "callv", "block", "loopval", "tget", "tlen", "pget"}
+COND = {"cmp", "and", "or", "not", "qcmp"}
 TRIVIAL_EXPR = ("num", 0)
 TRIVIAL_COND = ("cmp", "<", ("num", 0), ("num", 1))
 

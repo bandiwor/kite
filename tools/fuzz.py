@@ -30,8 +30,14 @@ class Gen:
         return [n for s in self.scopes for n in s]
 
     def numeric(self):
-        # closures are named c*, they are not numbers
-        return [n for n in self.visible() if n[0] != "c"]
+        # closures (c*), tables (t*) and struct instances (q*) are not numbers
+        return [n for n in self.visible() if n[0] not in "ctq"]
+
+    def tables(self):
+        return [n for n in self.visible() if n[0] == "t"]
+
+    def insts(self):
+        return [n for n in self.visible() if n[0] == "q"]
 
     def assignable(self):
         # loop counters (w*, n*) must never be reassigned or the loops might not terminate
@@ -55,6 +61,14 @@ class Gen:
         if c < 0.78 and self.funcs:
             name, ar = r.choice(self.funcs)
             return ("call", name, [self.expr(d + 1) for _ in range(ar)])
+        tabs, qs = self.tables(), self.insts()
+        if c < 0.80 and tabs:
+            t = r.choice(tabs)
+            if r.random() < 0.25:
+                return ("tlen", t)
+            return ("tget", t, self.expr(d + 1), self.fresh("k"))
+        if c < 0.82 and qs:
+            return ("pget", r.choice(qs), r.choice("ab"))
         vis = set(self.visible())
         live = [n for n in self.closures if n in vis]
         if c < 0.84 and live:
@@ -85,6 +99,9 @@ class Gen:
     def cond(self, d=0):
         r = self.r
         c = r.random()
+        qs = self.insts()
+        if len(qs) >= 1 and c < 0.12:
+            return ("qcmp", r.choice(["<", "<=", ">", ">=", "==", "!="]), r.choice(qs), r.choice(qs))
         if d > 2 or c < 0.6:
             return ("cmp", r.choice(["<", "<=", ">", ">=", "==", "!="]), self.expr(d + 1), self.expr(d + 1))
         if c < 0.75:
@@ -94,6 +111,41 @@ class Gen:
         return ("not", self.cond(d + 1))
 
     # statements -----------------------------------------------------------
+    def table_struct_stmt(self):
+        r = self.r
+        tabs, qs = self.tables(), self.insts()
+        ops = ["tnew", "qnew"]
+        if tabs: ops += ["tset", "tset", "taug", "tdel", "tpush", "tsum"]
+        if qs: ops += ["qset", "qaug", "qshow", "qop"]
+        op = r.choice(ops)
+        if op == "tnew":
+            name = self.fresh("t")
+            items = [self.expr() for _ in range(r.randint(0, 3))] if r.random() < 0.6 else None
+            self.scopes[-1].append(name)
+            return ("tnew", name, items)
+        if op == "qnew":
+            name = self.fresh("q")
+            e1, e2 = self.expr(), self.expr()
+            self.scopes[-1].append(name)
+            return ("qnew", name, e1, e2)
+        if op in ("tset", "taug", "tdel", "tpush", "tsum"):
+            t = r.choice(tabs)
+            if op == "tset": return ("tset", t, self.expr(), self.expr())
+            if op == "taug": return ("taug", t, self.expr(), r.choice("+-"), self.expr(), self.fresh("k"))
+            if op == "tdel": return ("tdel", t, self.expr())
+            if op == "tpush": return ("tpush", t, self.expr())
+            return ("tsum", t, self.fresh("s"), self.fresh("k"), self.fresh("v"), r.random() < 0.5)
+        q = r.choice(qs)
+        if op == "qset": return ("qset", q, r.choice("ab"), self.expr())
+        if op == "qaug": return ("qaug", q, r.choice("ab"), r.choice("+-"), self.expr())
+        if op == "qshow": return ("qshow", q, r.random() < 0.5)
+        name = self.fresh("q")
+        kind2 = r.choice(["add", "neg"])
+        n1, n2 = r.choice(qs), r.choice(qs)
+        self.scopes[-1].append(name)
+        return ("qop", name, kind2, n1, n2)
+
+
     def stmts(self, n):
         out = []
         for _ in range(n):
@@ -103,6 +155,8 @@ class Gen:
     def stmt(self):
         r = self.r
         vs = self.numeric()
+        if r.random() < 0.3:
+            return self.table_struct_stmt()
         c = r.random()
         if c < 0.18 or not vs:
             # declare (possibly shadowing an outer name inside a nested scope)
@@ -195,6 +249,13 @@ def kexpr(e):
         return f"{e[1]}({', '.join(kexpr(a) for a in e[2])})"
     if k == "callv":
         return f"{e[1]}({kexpr(e[2])})"
+    if k == "tget":
+        _, t, ie, kk = e
+        return f"do {{ const {kk} = ({kexpr(ie)} % 5); if has({t}, {kk}) {{ {t}[{kk}] }} else {{ 0 }} }}"
+    if k == "tlen":
+        return f"len({e[1]})"
+    if k == "pget":
+        return f"{e[1]}.{e[2]}"
     if k == "block":
         return "do { " + " ".join(kstmt(s) for s in e[1]) + f" {kexpr(e[2])} }}"
     if k == "loopval":
@@ -214,6 +275,8 @@ def kcond(c):
         return f"({kcond(c[1])} || {kcond(c[2])})"
     if k == "not":
         return f"(!{kcond(c[1])})"
+    if k == "qcmp":
+        return f"({c[2]} {c[1]} {c[3]})"
     raise Exception(k)
 
 def kblock(ss):
@@ -245,7 +308,48 @@ def kstmt(s):
         return f"const {s[1]} = |{s[2]}| => {kexpr(s[3])};"
     if k == "ret":
         return f"if {kcond(s[1])} {{ return {kexpr(s[2])}; }}"
+    if k == "tnew":
+        if s[2] is None:
+            return f"var {s[1]} = {{}};"
+        return f"var {s[1]} = [{', '.join(kexpr(x) for x in s[2])}];"
+    if k == "qnew":
+        return f"var {s[1]} = P({kexpr(s[2])}, {kexpr(s[3])});"
+    if k == "tset":
+        return f"{s[1]}[({kexpr(s[2])} % 5)] = {kexpr(s[3])};"
+    if k == "taug":
+        _, t, ie, op, e, kk = s
+        return f"do {{ const {kk} = ({kexpr(ie)} % 5); if has({t}, {kk}) {{ {t}[{kk}] {op}= ({kexpr(e)} % 7); }} }}"
+    if k == "tdel":
+        return f"{s[1]}[({kexpr(s[2])} % 5)] = nil;"
+    if k == "tpush":
+        return f"push({s[1]}, {kexpr(s[2])});"
+    if k == "tsum":
+        _, t, sv, kk, vv, with_key = s
+        if with_key:
+            return f"do {{ var {sv} = 0; for {kk}, {vv} in {t} {{ {sv} += {vv} + {kk}; }} print({sv}); }}"
+        return f"do {{ var {sv} = 0; for {vv} in {t} {{ {sv} += {vv}; }} print({sv}); }}"
+    if k == "qset":
+        return f"{s[1]}.{s[2]} = {kexpr(s[3])};"
+    if k == "qaug":
+        return f"{s[1]}.{s[2]} {s[3]}= ({kexpr(s[4])} % 7);"
+    if k == "qshow":
+        if s[2]:
+            return f"print({s[1]});"
+        return f"print({s[1]}.a, {s[1]}.b);"
+    if k == "qop":
+        _, name, kind, n1, n2 = s
+        return f"var {name} = {n1} + {n2};" if kind == "add" else f"var {name} = -{n1};"
     raise Exception(k)
+
+PRELUDE = """struct P { a, b }
+impl P {
+    fn new(self, a, b) { self.a = a; self.b = b; }
+    fn add(x, y) { P((x.a + y.a) % 100003, (x.b + y.b) % 100003) }
+    fn neg(x) { P(-x.a, -x.b) }
+    fn eq(x, y) { x.a == y.a && x.b == y.b }
+    fn lt(x, y) { x.a < y.a || (x.a == y.a && x.b < y.b) }
+}
+"""
 
 def kfn(f):
     _, name, params, body, tail = f
@@ -275,14 +379,29 @@ class Env:
 
 def fmt(x):
     if isinstance(x, float) and x.is_integer() and abs(x) < 1e15:
-        s = str(int(x))
-        if x == 0 and math.copysign(1, x) < 0:
-            return "-0"
-        return s
+        return str(int(x))   # negative zero prints as 0
     return repr(x)
 
 class Closure:
     def __init__(self, param, body, env): self.param, self.body, self.env = param, body, env
+
+class Tab:
+    """Reference model of a Kite table restricted to integer keys."""
+    def __init__(self, items=None):
+        self.d = {}
+        for x in (items or []): self.push(x)
+    def first_free(self):
+        n = 0
+        while n in self.d: n += 1
+        return n
+    def push(self, v): self.d[self.first_free()] = v
+
+class Inst:
+    def __init__(self, a, b): self.a, self.b = a, b
+
+def p_add(x, y): return Inst(math.fmod(x.a + y.a, 100003.0), math.fmod(x.b + y.b, 100003.0))
+def p_lt(x, y): return x.a < y.a or (x.a == y.a and x.b < y.b)
+def p_eq(x, y): return x.a == y.a and x.b == y.b
 
 class Ref:
     def __init__(self): self.funcs = {}; self.out = []
@@ -299,6 +418,13 @@ def ev(e, env, R):
     if k == "call":
         args = [ev(a, env, R) for a in e[2]]
         return call_fn(R.funcs[e[1]], args, R)
+    if k == "tget":
+        _, t, ie, kk = e
+        key = math.fmod(ev(ie, env, R), 5.0)
+        key = int(key)
+        return env.get(t).d.get(key, 0.0)
+    if k == "tlen": return float(len(env.get(e[1]).d))
+    if k == "pget": return getattr(env.get(e[1]), e[2])
     if k == "callv":
         c = env.get(e[1]); a = ev(e[2], env, R)
         ne = Env(c.env); ne.vars[c.param] = a
@@ -334,6 +460,14 @@ def cv(c, env, R):
     if k == "and": return cv(c[1], env, R) and cv(c[2], env, R)
     if k == "or": return cv(c[1], env, R) or cv(c[2], env, R)
     if k == "not": return not cv(c[1], env, R)
+    if k == "qcmp":
+        x, y, o = env.get(c[2]), env.get(c[3]), c[1]
+        if o == "<": return p_lt(x, y)
+        if o == ">": return p_lt(y, x)
+        if o == "<=": return not p_lt(y, x)
+        if o == ">=": return not p_lt(x, y)
+        if o == "==": return p_eq(x, y)
+        return not p_eq(x, y)
     raise Exception(k)
 
 def run_block(ss, env, R):
@@ -377,6 +511,47 @@ def ex(s, env, R):
     elif k == "closure": env.vars[s[1]] = Closure(s[2], s[3], env)
     elif k == "ret":
         if cv(s[1], env, R): raise Return(ev(s[2], env, R))
+    elif k == "tnew":
+        env.vars[s[1]] = Tab(None if s[2] is None else [ev(x, env, R) for x in s[2]])
+    elif k == "qnew":
+        a = ev(s[2], env, R); b = ev(s[3], env, R)
+        env.vars[s[1]] = Inst(a, b)
+    elif k == "tset":
+        t = env.get(s[1]); key = int(math.fmod(ev(s[2], env, R), 5.0)); v = ev(s[3], env, R)
+        t.d[key] = v
+    elif k == "taug":
+        _, t, ie, op, e, kk = s
+        t = env.get(t); key = int(math.fmod(ev(ie, env, R), 5.0))
+        if key in t.d:
+            cur = t.d[key]                       # read before the right-hand side runs
+            v = math.fmod(ev(e, env, R), 7.0)
+            t.d[key] = cur + v if op == "+" else cur - v
+    elif k == "tdel":
+        t = env.get(s[1]); key = int(math.fmod(ev(s[2], env, R), 5.0))
+        t.d.pop(key, None)
+    elif k == "tpush":
+        t = env.get(s[1]); v = ev(s[2], env, R)
+        t.push(v)
+    elif k == "tsum":
+        t = env.get(s[1]); tot = 0.0
+        for key, v in t.d.items(): tot += v + (key if s[2] else 0)
+        R.out.append(fmt(tot))
+    elif k == "qset":
+        q = env.get(s[1]); v = ev(s[3], env, R)
+        setattr(q, s[2], v)
+    elif k == "qaug":
+        q = env.get(s[1])
+        cur = getattr(q, s[2])                   # read before the right-hand side runs
+        v = math.fmod(ev(s[4], env, R), 7.0)
+        setattr(q, s[2], cur + v if s[3] == "+" else cur - v)
+    elif k == "qshow":
+        q = env.get(s[1])
+        if s[2]: R.out.append(f"P{{a: {fmt(q.a)}, b: {fmt(q.b)}}}")
+        else: R.out.append(f"{fmt(q.a)} {fmt(q.b)}")
+    elif k == "qop":
+        _, name, kind, n1, n2 = s
+        x = env.get(n1)
+        env.vars[name] = p_add(x, env.get(n2)) if kind == "add" else Inst(-x.a, -x.b)
     else: raise Exception(k)
 
 def call_fn(f, args, R):
@@ -440,6 +615,15 @@ class Resolver:
         if k == "if": return ("if", self.cond(e[1]), self.expr(e[2]), self.expr(e[3]))
         if k == "call": return ("call", e[1], [self.expr(a) for a in e[2]])
         if k == "callv": return ("callv", self.lookup(e[1]), self.expr(e[2]))
+        if k == "tget":
+            _, t, ie, kk = e
+            ri = self.expr(ie)
+            self.push()
+            uk = self.declare(kk)
+            self.pop()
+            return ("tget", self.lookup(t), ri, uk)
+        if k == "tlen": return ("tlen", self.lookup(e[1]))
+        if k == "pget": return ("pget", self.lookup(e[1]), e[2])
         if k == "block":
             self.push()
             ss = [self.stmt(x) for x in e[1]]
@@ -463,6 +647,7 @@ class Resolver:
         if k == "cmp": return ("cmp", c[1], self.expr(c[2]), self.expr(c[3]))
         if k in ("and", "or"): return (k, self.cond(c[1]), self.cond(c[2]))
         if k == "not": return ("not", self.cond(c[1]))
+        if k == "qcmp": return ("qcmp", c[1], self.lookup(c[2]), self.lookup(c[3]))
         raise Exception(k)
 
     def stmt(self, s):
@@ -499,6 +684,32 @@ class Resolver:
             self.pop()
             return ("closure", uname, up, body)
         if k == "ret": return ("ret", self.cond(s[1]), self.expr(s[2]))
+        if k == "tnew":
+            items = None if s[2] is None else [self.expr(x) for x in s[2]]
+            return ("tnew", self.declare(s[1]), items)
+        if k == "qnew":
+            e1, e2 = self.expr(s[2]), self.expr(s[3])
+            return ("qnew", self.declare(s[1]), e1, e2)
+        if k == "tset": 
+            t = self.lookup(s[1]); ie = self.expr(s[2]); e = self.expr(s[3])
+            return ("tset", t, ie, e)
+        if k == "taug":
+            _, t, ie, op, e, kk = s
+            t = self.lookup(t); ri = self.expr(ie)
+            self.push(); uk = self.declare(kk); re_ = self.expr(e); self.pop()
+            return ("taug", t, ri, op, re_, uk)
+        if k == "tdel": return ("tdel", self.lookup(s[1]), self.expr(s[2]))
+        if k == "tpush": return ("tpush", self.lookup(s[1]), self.expr(s[2]))
+        if k == "tsum":
+            _, t, sv, kk, vv, with_key = s
+            return ("tsum", self.lookup(t), with_key)
+        if k == "qset": return ("qset", self.lookup(s[1]), s[2], self.expr(s[3]))
+        if k == "qaug": return ("qaug", self.lookup(s[1]), s[2], s[3], self.expr(s[4]))
+        if k == "qshow": return ("qshow", self.lookup(s[1]), s[2])
+        if k == "qop":
+            _, name, kind, n1, n2 = s
+            a, b = self.lookup(n1), self.lookup(n2)
+            return ("qop", self.declare(name), kind, a, b)
         raise Exception(k)
 
 # --------------------------------------------------------------------------- driver
@@ -517,7 +728,7 @@ def gen_ast(seed):
     return funcs, body, toplevel
 
 def render(funcs, body, toplevel):
-    src = "\n".join(kfn(f) for f in funcs) + "\n"
+    src = PRELUDE + "\n".join(kfn(f) for f in funcs) + "\n"
     if toplevel:
         src += "\n".join(kstmt(s) for s in body) + "\n"
     else:
