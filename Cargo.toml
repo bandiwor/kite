@@ -1,0 +1,26 @@
+[package]
+name = "kite"
+version = "0.1.0"
+edition = "2021"
+description = "Kite: a small, fast, dynamically typed, expression-oriented language with a register-less bytecode VM"
+license = "MIT"
+
+[lib]
+name = "kite"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kite"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 1
+
+[profile.test]
+opt-level = 1

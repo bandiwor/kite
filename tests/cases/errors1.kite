@@ -1,0 +1,2 @@
+// error: undefined variable 'nope'
+print(nope);

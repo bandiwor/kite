@@ -1,0 +1,46 @@
+fn add(a, b) {
+    return a + b;
+}
+const mul = |a, b| => a * b;
+print(add(2, 3), mul(4, 5));   // expect: 5 20
+
+// implicit return of the last expression
+fn sq(x) { x * x }
+print(sq(7));   // expect: 49
+fn noret() { }
+print(noret());   // expect: nil
+fn early(x) {
+    if x < 0 { return "neg"; }
+    "non-neg"
+}
+print(early(-1), early(1));   // expect: neg non-neg
+
+// recursion, mutual recursion through globals
+fn fib(n) { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }
+print(fib(20));   // expect: 6765
+fn is_even(n) { if n == 0 { true } else { is_odd(n - 1) } }
+fn is_odd(n) { if n == 0 { false } else { is_even(n - 1) } }
+print(is_even(10), is_odd(7));   // expect: true true
+
+// lambdas with blocks, no params, immediately invoked
+const k = || => 99;
+print(k());   // expect: 99
+const blockl = |x| { var y = x + 1; y * 2 };
+print(blockl(3));   // expect: 8
+print((|a| => a + 1)(1));   // expect: 2
+print(fn (a) { a * 3 }(4));   // expect: 12
+
+// local recursive function
+fn outer() {
+    fn count(n, acc) { if n == 0 { acc } else { count(n - 1, acc + n) } }
+    count(1000, 0)
+}
+print(outer());   // expect: 500500
+const lam_fact = |n| => if n <= 1 { 1 } else { n * lam_fact(n - 1) };
+print(lam_fact(10));   // expect: 3628800
+
+// functions are values
+fn apply(f, x) { f(x) }
+print(apply(sq, 6), apply(|x| => x - 1, 6));   // expect: 36 5
+const fns = [sq, |x| => x + 1];
+print(fns[0](3), fns[1](3));   // expect: 9 4

@@ -1,0 +1,65 @@
+// everything is an expression
+const v = if 1 < 2 { "yes" } else { "no" };
+print(v);   // expect: yes
+print(if false { 1 });   // expect: nil
+const w = if false { 1 } else if false { 2 } else { 3 };
+print(w);   // expect: 3
+const blk = do { var t = 5; t * 2 };
+print(blk);   // expect: 10
+
+const val = loop {
+    break 42;
+}
+print(val);   // expect: 42
+
+var i = 0;
+const r = loop {
+    i += 1;
+    if i == 5 { break i * 10; }
+};
+print(r);   // expect: 50
+
+// while with continue / break
+i = 0;
+var total = 0;
+while i < 10 {
+    i += 1;
+    if i % 2 == 0 { continue; }
+    if i > 7 { break; }
+    total += i;
+}
+print(total);   // expect: 16
+print(while false { });   // expect: nil
+
+// break inside nested expression with temporaries on the stack
+const z = 1 + loop { break 2 + (if true { 3 } else { 4 }); } * 10;
+print(z);   // expect: 51
+fn f() { return 1 + loop { break 5; }; }
+print(f());   // expect: 6
+
+// for loops
+var sum = 0;
+for k in 0..5 { sum += k; }
+print(sum);   // expect: 10
+for k in 5..5 { print("never"); }
+for k in 3..1 { print("never"); }
+const t = [10, 20, 30];
+for e in t { write(e, ","); }
+print();   // expect: 10,20,30,
+for idx, e in t { write(idx, "=", e, " "); }
+print();   // expect: 0=10 1=20 2=30 
+for ch in "héy" { write("[", ch, "]"); }
+print();   // expect: [h][é][y]
+var found = for q in 0..100 { if q * q > 50 { break q; } };
+print(found);   // expect: 8
+
+// nested loops with labels-free break/continue
+var pairs = 0;
+for a in 0..4 {
+    for b in 0..4 {
+        if b > a { break; }
+        if (a + b) % 2 == 1 { continue; }
+        pairs += 1;
+    }
+}
+print(pairs);   // expect: 6

@@ -1,0 +1,4 @@
+// error: has no field 'z'
+struct P { x }
+const p = P(1);
+print(p.z);

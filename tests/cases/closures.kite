@@ -1,0 +1,82 @@
+fn counter() {
+    var n = 0;
+    return || => { n += 1; n };
+}
+const c1 = counter();
+const c2 = counter();
+print(c1(), c1(), c1(), c2());   // expect: 1 2 3 1
+
+// shared upvalue between closures
+fn pair() {
+    var v = 0;
+    const inc = || => { v += 1; };
+    const get = || => v;
+    return [inc, get];
+}
+const p = pair();
+p[0](); p[0]();
+print(p[1]());   // expect: 2
+
+// each iteration gets a fresh variable
+var fs = [];
+for i in 0..3 {
+    push(fs, || => i * 10);
+}
+print(fs[0](), fs[1](), fs[2]());   // expect: 0 10 20
+var gs = [];
+var j = 0;
+while j < 3 {
+    var captured = j;
+    push(gs, || => captured);
+    j += 1;
+}
+print(gs[0](), gs[1](), gs[2]());   // expect: 0 1 2
+
+// closing on break / continue
+var hs = [];
+for i in 0..10 {
+    var sq = i * i;
+    push(hs, || => sq);
+    if i == 2 { break; }
+}
+print(hs[0](), hs[1](), hs[2]());   // expect: 0 1 4
+
+// nested closures reach through several levels
+fn level1() {
+    var a = 1;
+    return || => {
+        var b = 10;
+        return || => {
+            a += 1;
+            b += 1;
+            a + b
+        };
+    };
+}
+const l3 = level1()();
+print(l3(), l3());   // expect: 13 15
+
+// closure captured after the enclosing function returned keeps working
+fn make_adder(n) { |x| => x + n }
+const add5 = make_adder(5);
+const add7 = make_adder(7);
+print(add5(1), add7(1));   // expect: 6 8
+
+// upvalue observed while still open and after closing
+fn open_then_closed() {
+    var x = 1;
+    const get = || => x;
+    x = 2;
+    const before = get();
+    return [before, get];
+}
+const oc = open_then_closed();
+print(oc[0], oc[1]());   // expect: 2 2
+
+// block-scoped capture
+var saved = [];
+do {
+    var t = "inner";
+    push(saved, || => t);
+}
+print(saved[0]());   // expect: inner

@@ -1,0 +1,75 @@
+struct Vec2 { x, y }
+
+impl Vec2 {
+    fn new(self, x, y) {
+        self.x = x;
+        self.y = y;
+    }
+    fn add(a, b) { Vec2(a.x + b.x, a.y + b.y) }
+    fn sub(a, b) { Vec2(a.x - b.x, a.y - b.y) }
+    fn mul(a, b) {
+        if type(a) == "Vec2" {
+            if type(b) == "Vec2" { a.x * b.x + a.y * b.y } else { Vec2(a.x * b, a.y * b) }
+        } else {
+            Vec2(b.x * a, b.y * a)
+        }
+    }
+    fn neg(a) { Vec2(-a.x, -a.y) }
+    fn eq(a, b) { a.x == b.x && a.y == b.y }
+    fn lt(a, b) { a.x * a.x + a.y * a.y < b.x * b.x + b.y * b.y }
+    fn str(a) { "(" + a.x + ", " + a.y + ")" }
+    fn len(a) { 2 }
+    fn length(a) { math.sqrt(a.x * a.x + a.y * a.y) }
+}
+
+const a = Vec2(1, 2);
+const b = Vec2(3, 4);
+print(a + b);          // expect: (4, 6)
+print(b - a);          // expect: (2, 2)
+print(a * 3, 3 * a);   // expect: (3, 6) (3, 6)
+print(a * b);          // expect: 11
+print(-a);             // expect: (-1, -2)
+print(a == Vec2(1, 2), a != b, a == b);   // expect: true true false
+print(a < b, a > b, a <= b, a >= b);      // expect: true false true false
+print(len(a));         // expect: 2
+print(b:length());     // expect: 5
+print(Vec2.length(b)); // expect: 5
+print(type(a), type(Vec2));   // expect: Vec2 struct
+a.x = 100;
+print(a.x, a.y);       // expect: 100 2
+
+// default positional constructor, default printing
+struct Pt { x, y }
+const p = Pt(1, "two");
+print(p);              // expect: Pt{x: 1, y: "two"}
+p.y = [1, 2];
+print(p);              // expect: Pt{x: 1, y: [1, 2]}
+const empty = Pt();
+print(empty.x);        // expect: nil
+
+// index / call hooks
+struct Bag { items }
+impl Bag {
+    fn new(self) { self.items = {}; }
+    fn get(self, k) { self.items[k] }
+    fn set(self, k, v) { self.items[k] = v; }
+    fn call(self, k) { "called " + k }
+}
+const bag = Bag();
+bag["a"] = 1;
+bag.b = 2;      // not a field: goes through `set`
+print(bag["a"], bag.b, bag("x"));   // expect: 1 2 called x
+
+// methods on struct instances via `:`
+struct Counter { n }
+impl Counter {
+    fn new(self) { self.n = 0; }
+    fn inc(self, by) { self.n += by; self }
+}
+const cnt = Counter();
+cnt:inc(2):inc(3);
+print(cnt.n);   // expect: 5
+
+// struct values live in tables and closures
+const list = [Vec2(1, 1), Vec2(2, 2)];
+print(list[0] + list[1]);   // expect: (3, 3)

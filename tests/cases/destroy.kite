@@ -1,0 +1,23 @@
+struct Res { name }
+impl Res {
+    fn new(self, name) { self.name = name; print("open", name); }
+    fn destroy(self) { print("close", self.name); }
+}
+
+fn scope() {
+    const r = Res("temp");
+    print("using", r.name);
+}
+scope();
+gc();                    // collects the unreachable Res and runs `destroy`
+// expect: open temp
+// expect: using temp
+// expect: close temp
+
+const keep = Res("kept");     // expect: open kept
+const explicit = Res("manual");   // expect: open manual
+destroy(explicit);        // expect: close manual
+destroy(explicit);        // already finalized: nothing happens
+print("end");             // expect: end
+// at exit the remaining live instances are destroyed
+// expect: close kept

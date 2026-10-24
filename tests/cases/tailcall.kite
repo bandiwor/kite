@@ -1,0 +1,12 @@
+// config: opt-only
+// Tail calls reuse the frame, so this would overflow the stack otherwise.
+fn count(n, acc) { if n == 0 { acc } else { count(n - 1, acc + n) } }
+print(count(1000000, 0));   // expect: 500000500000
+
+fn even(n) { if n == 0 { true } else { odd(n - 1) } }
+fn odd(n) { if n == 0 { false } else { even(n - 1) } }
+print(even(1000001));   // expect: false
+
+// a tail call to a native
+fn shout(s) { str(s) }
+print(shout(5) + "!");   // expect: 5!

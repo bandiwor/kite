@@ -1,0 +1,3 @@
+// error: table key cannot be NaN
+const t = {};
+t[0 / 0] = 1;
