@@ -183,6 +183,10 @@ impl Token {
         self.len_lo as usize | (self.len_hi as usize) << 8
     }
     #[inline(always)]
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+    #[inline(always)]
     pub fn end(self) -> usize {
         self.start as usize + self.len()
     }

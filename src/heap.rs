@@ -98,26 +98,28 @@ impl Heap {
     #[inline]
     pub fn mark_value(&mut self, v: Value) {
         if v.is_obj() {
-            self.mark_obj(v.as_header());
+            // SAFETY: an object value always points at a live heap object
+            unsafe { self.mark_obj(v.as_header()) };
         }
     }
 
+    /// # Safety
+    /// `p` must point to a live object of this heap.
     #[inline]
-    pub fn mark_obj(&mut self, p: *mut Header) {
-        unsafe {
-            if !(*p).marked {
-                (*p).marked = true;
-                match (*p).kind {
-                    // leaves: nothing to trace
-                    Kind::Str | Kind::Native => {}
-                    _ => self.gray.push(p),
-                }
+    pub unsafe fn mark_obj(&mut self, p: *mut Header) {
+        if !(*p).marked {
+            (*p).marked = true;
+            match (*p).kind {
+                // leaves: nothing to trace
+                Kind::Str | Kind::Native => {}
+                _ => self.gray.push(p),
             }
         }
     }
 
     pub fn mark_gc<T>(&mut self, g: Gc<T>) {
-        self.mark_obj(g.as_ptr() as *mut Header);
+        // SAFETY: a `Gc` handle points at a live object
+        unsafe { self.mark_obj(g.as_ptr() as *mut Header) };
     }
 
     /// Drain the gray stack, marking everything reachable.

@@ -273,7 +273,7 @@ fn to_num(vm: &mut Vm, a: &[Value]) -> R {
         let t = s.as_str().trim();
         let parsed = crate::text::parse_number(t)
             .or_else(|| t.strip_prefix('-').and_then(crate::text::parse_number).map(|n| -n))
-            .or_else(|| t.parse::<f64>().ok().filter(|_| t.chars().next().map_or(false, |c| c.is_ascii_digit() || c == '.' || c == '+')));
+            .or_else(|| t.parse::<f64>().ok().filter(|_| t.chars().next().is_some_and(|c| c.is_ascii_digit() || c == '.' || c == '+')));
         return Ok(parsed.map_or(Value::NIL, Value::num));
     }
     if v.is_bool() {

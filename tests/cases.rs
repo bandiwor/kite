@@ -93,7 +93,7 @@ fn all_cases() {
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().map_or(false, |e| e == "kite"))
+        .filter(|p| p.extension().is_some_and(|e| e == "kite"))
         .collect();
     files.sort();
     assert!(!files.is_empty(), "no test cases found");

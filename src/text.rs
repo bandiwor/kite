@@ -22,7 +22,7 @@ pub fn parse_number(text: &str) -> Option<f64> {
             return u64::from_str_radix(&s[2..], radix).ok().map(|v| v as f64);
         }
     }
-    if !bytes.first().map_or(false, |c| c.is_ascii_digit()) {
+    if !bytes.first().is_some_and(|c| c.is_ascii_digit()) {
         return None;
     }
     s.parse::<f64>().ok()
@@ -127,7 +127,7 @@ mod tests {
             s
         };
         assert_eq!(f(3.0), "3");
-        assert_eq!(f(3.14), "3.14");
+        assert_eq!(f(2.75), "2.75");
         assert_eq!(f(-0.5), "-0.5");
         assert_eq!(f(1e21), "1e21");
         assert_eq!(f(f64::NAN), "nan");

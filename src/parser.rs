@@ -213,7 +213,7 @@ impl<'a> Parser<'a> {
     fn error_at(&mut self, t: Token, msg: String) {
         if self.errors.len() < MAX_ERRORS {
             // avoid piling up several errors at the same position
-            if self.errors.last().map_or(true, |d| d.start != t.start) {
+            if self.errors.last().is_none_or(|d| d.start != t.start) {
                 self.errors.push(Diag::new(msg, t.start, t.len() as u32));
             }
         }
@@ -645,7 +645,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_expr(&mut self) -> PResult<NodeId> {
+    fn parse_expr(&mut self) -> PResult<NodeId> {
         self.parse_bp(0)
     }
 

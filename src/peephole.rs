@@ -103,7 +103,7 @@ fn jnot_lk(c: Cmp, a: u16, k: u16, o: i16) -> Op {
 }
 
 fn is_num_const(consts: &[Value], k: u32) -> bool {
-    consts.get(k as usize).map_or(false, |v| v.is_num())
+    consts.get(k as usize).is_some_and(|v| v.is_num())
 }
 
 fn is_pure_push(op: Op) -> bool {
@@ -298,9 +298,7 @@ fn pass(sc: &mut Scratch, code: &mut Vec<Op>, offsets: &mut Vec<u32>, consts: &[
             }
             // old indices that pointed into the window now point at its replacement
             // (or, if it vanished, at whatever is emitted next, which is also `start`)
-            for o in first_old as usize..=i {
-                map[o] = start as u32;
-            }
+            map[first_old as usize..=i].fill(start as u32);
             if let Rewrite::Two(..) = rw {
                 map[carrier.first as usize] = (start + 1) as u32;
             }
@@ -310,7 +308,7 @@ fn pass(sc: &mut Scratch, code: &mut Vec<Op>, offsets: &mut Vec<u32>, consts: &[
         }
         // code after an unconditional transfer is dead - unless the window just
         // vanished, in which case the last op is an older one
-        if !vanished && out.last().map_or(false, |e| e.op.is_terminator()) {
+        if !vanished && out.last().is_some_and(|e| e.op.is_terminator()) {
             dead = true;
         }
     }

@@ -293,10 +293,10 @@ impl Vm {
         if self.opts.dump_bytecode {
             eprintln!("{}", disasm::disassemble(proto, &self.interner));
         }
-        self.run_main(proto).map_err(|e| self.to_kite_error(e, &source))
+        self.run_main(proto).map_err(|e| self.to_kite_error(*e, &source))
     }
 
-    fn to_kite_error(&self, e: Box<RtError>, fallback: &Rc<SourceFile>) -> KiteError {
+    fn to_kite_error(&self, e: RtError, fallback: &Rc<SourceFile>) -> KiteError {
         let (source, offset) = match e.trace.first() {
             Some(t) => (t.source.clone(), t.offset),
             None => (fallback.clone(), 0),
@@ -1292,9 +1292,7 @@ impl Vm {
             }
             macro_rules! enter_closure {
                 ($cl:expr, $argc:expr) => {{
-                    if let Err(e) = self.push_frame($cl, $argc) {
-                        return Err(e);
-                    }
+                    self.push_frame($cl, $argc)?;
                     sp = self.sp;
                     reload!();
                 }};

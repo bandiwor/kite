@@ -25,7 +25,7 @@ fn examples_run() {
             let mut ran = 0;
             for entry in std::fs::read_dir(&dir).unwrap() {
                 let path = entry.unwrap().path();
-                if path.extension().map_or(true, |e| e != "kite") {
+                if path.extension().is_none_or(|e| e != "kite") {
                     continue;
                 }
                 let src = std::fs::read_to_string(&path).unwrap();
