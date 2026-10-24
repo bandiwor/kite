@@ -421,6 +421,87 @@ mod tests {
         assert_eq!(u.get(num(7.0)), num(2.0));
     }
 
+    /// Random operation sequences checked against a trivially correct model.
+    #[test]
+    fn matches_a_reference_model() {
+        use crate::heap::Heap;
+        use std::collections::HashMap;
+
+        #[derive(Hash, PartialEq, Eq, Clone, Debug)]
+        enum MKey {
+            Num(i64), // keys are small integers or halves, scaled by 2
+            Str(String),
+        }
+
+        let mut heap = Heap::new();
+        let mut rng = 0x1234_5678_9abc_def0u64;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        for round in 0..300 {
+            let mut t = Table::new(0);
+            let mut model: HashMap<MKey, f64> = HashMap::new();
+            let domain = 3 + (next() % 60) as i64;
+            for step in 0..400 {
+                let r = next();
+                let (key, mkey) = match r % 3 {
+                    0 => {
+                        let n = (next() as i64).rem_euclid(domain);
+                        (Value::num(n as f64), MKey::Num(n * 2))
+                    }
+                    1 => {
+                        let n = (next() as i64).rem_euclid(domain);
+                        (Value::num(n as f64 + 0.5), MKey::Num(n * 2 + 1))
+                    }
+                    _ => {
+                        let n = (next() as i64).rem_euclid(domain);
+                        let text = format!("key{}", n);
+                        // alternate between interned and fresh (non-interned) copies
+                        let sv = if next() % 2 == 0 { heap.intern(&text) } else { heap.new_str(text.clone()) };
+                        (Value::from(sv), MKey::Str(text))
+                    }
+                };
+                if next() % 3 == 0 {
+                    t.set(key, Value::NIL).unwrap();
+                    model.remove(&mkey);
+                } else {
+                    let v = (step * 7 + round) as f64;
+                    t.set(key, Value::num(v)).unwrap();
+                    model.insert(mkey.clone(), v);
+                }
+                // point lookups agree
+                assert_eq!(t.len(), model.len(), "len mismatch at round {} step {}", round, step);
+                if step % 16 == 0 {
+                    // iteration yields every live entry exactly once
+                    let mut seen = 0;
+                    let mut pos = 0;
+                    while let Some((np, k, v)) = t.next(pos) {
+                        pos = np;
+                        seen += 1;
+                        let mk = if k.is_num() {
+                            let n = k.as_num();
+                            MKey::Num((n * 2.0).round() as i64)
+                        } else {
+                            MKey::Str(k.as_str().unwrap().as_str().to_string())
+                        };
+                        assert_eq!(model.get(&mk).copied(), Some(v.as_num()), "iterated entry {:?} wrong", mk);
+                    }
+                    assert_eq!(seen, model.len());
+                }
+            }
+            for (mk, want) in &model {
+                let key = match mk {
+                    MKey::Num(n) => Value::num(*n as f64 / 2.0),
+                    MKey::Str(s) => Value::from(heap.new_str(s.clone())),
+                };
+                assert_eq!(t.get(key), Value::num(*want), "get {:?}", mk);
+            }
+        }
+    }
+
     #[test]
     fn invalid_keys() {
         let mut t = Table::new(0);

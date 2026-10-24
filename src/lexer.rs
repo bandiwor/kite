@@ -46,6 +46,12 @@ pub fn lex(src: &str) -> Vec<Token> {
     assert!(n < u32::MAX as usize, "source too large");
     let mut toks: Vec<Token> = Vec::with_capacity(n / 3 + 4);
     let mut i = 0usize;
+    // `#!/usr/bin/env kite`
+    if b.starts_with(b"#!") {
+        while i < n && b[i] != b'\n' {
+            i += 1;
+        }
+    }
 
     macro_rules! at {
         ($k:expr) => {
@@ -360,6 +366,11 @@ mod tests {
         assert_eq!(kinds("a // c\n b /* x /* y */ z */ c"), vec![Ident, Ident, Ident, Eof]);
         assert_eq!(kinds(r#""a\"b" 'c'"#), vec![String, String, Eof]);
         assert_eq!(kinds("\"abc"), vec![Error, Eof]);
+    }
+
+    #[test]
+    fn shebang_is_skipped() {
+        assert_eq!(kinds("#!/usr/bin/env kite\nvar x"), vec![Var, Ident, Eof]);
     }
 
     #[test]

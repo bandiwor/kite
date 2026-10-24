@@ -36,6 +36,7 @@ fn real_main() -> u8 {
     let mut timing = false;
     let mut file: Option<String> = None;
     let mut code: Option<String> = None;
+    let mut script_args: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -66,7 +67,9 @@ fn real_main() -> u8 {
             }
             _ => {
                 if file.is_some() {
-                    // remaining arguments are for the script (unused for now)
+                    // everything after the script path belongs to the script
+                    script_args.push(a);
+                    script_args.extend(args.by_ref());
                     break;
                 }
                 file = Some(a);
@@ -75,6 +78,13 @@ fn real_main() -> u8 {
     }
 
     let mut vm = Vm::new();
+    // `args`: command-line arguments after the script path
+    let mut args_table = vm.new_table();
+    for a in &script_args {
+        let v = vm.new_string(a.as_str());
+        args_table.push(v);
+    }
+    vm.define_global("args", kite::Value::from(args_table));
     opts.timing = timing;
     vm.opts = opts;
     vm.heap.stress = gc_stress || std::env::var_os("KITE_GC_STRESS").is_some();

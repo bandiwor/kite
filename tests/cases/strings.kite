@@ -18,7 +18,7 @@ print("tab\there", "quote\"d", 'single', "nl\\n");   // expect: tab	here quote"d
 print("\u{48}\x49\0end":len());   // expect: 6
 print(str(12), str(1.5), str(nil), str(true), str([1]), num("42"), num("3.5"), num("0x10"), num("abc"), num("-7"));   // expect: 12 1.5 nil true [1] 42 3.5 16 nil -7
 print("a" < "b", "abc" < "abd", "Z" < "a", "" < "a");   // expect: true true true true
-print(1e3, 1.5e-3, 123456789012, 0.1 + 0.2, 1e100, -0.0, 100 / 3);   // expect: 1000 0.0015 123456789012 0.30000000000000004 1e100 -0 33.333333333333336
+print(1e3, 1.5e-3, 123456789012, 0.1 + 0.2, 1e100, -0.0, 100 / 3);   // expect: 1000 0.0015 123456789012 0.30000000000000004 1e100 0 33.333333333333336
 print(2 ** 0.5, 10 ** 15, 10 ** 16, 255 / 5);   // expect: 1.4142135623730951 1000000000000000 1e16 51
 print(math.floor(-1.5), math.ceil(1.2), math.round(2.5), math.abs(-3), math.max(1, 9, 3), math.min(4, 2), math.sqrt(16));   // expect: -2 2 3 3 9 2 4
 print(math.pi > 3.14, math.huge, math.sign(-4));   // expect: true inf -1

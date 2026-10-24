@@ -86,11 +86,8 @@ pub fn fmt_num(n: f64, out: &mut String) {
     } else if n.is_infinite() {
         out.push_str(if n > 0.0 { "inf" } else { "-inf" });
     } else if n == n.trunc() && n.abs() < 1e15 {
-        if n == 0.0 && n.is_sign_negative() {
-            out.push_str("-0");
-        } else {
-            let _ = write!(out, "{}", n as i64);
-        }
+        // negative zero prints as plain `0` (`-4 % 2` would otherwise show `-0`)
+        let _ = write!(out, "{}", n as i64);
     } else if n.abs() >= 1e16 || (n != 0.0 && n.abs() < 1e-5) {
         let _ = write!(out, "{:e}", n);
     } else {
