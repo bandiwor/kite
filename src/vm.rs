@@ -24,12 +24,12 @@ use crate::table::{KeyError, Table};
 use crate::text::fmt_num;
 use crate::value::Value;
 use crate::{analyzer, disasm};
-use std::alloc::{alloc, dealloc, Layout};
+use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::io::Write;
 use std::rc::Rc;
 
-pub const STACK_SIZE: usize = 1 << 20;
-pub const MAX_FRAMES: usize = 1 << 16;
+pub const STACK_SIZE: usize = 1 << 22; // values (32 MiB of address space, committed lazily)
+pub const MAX_FRAMES: usize = 400_000;
 const MAX_NEST: u32 = 120;
 
 // ---- errors ----------------------------------------------------------------------
@@ -167,11 +167,10 @@ impl Default for Vm {
 impl Vm {
     pub fn new() -> Vm {
         let layout = Layout::array::<Value>(STACK_SIZE).unwrap();
-        let stack = unsafe { alloc(layout) as *mut Value };
+        // Zeroed pages are only committed when touched.  A zero slot reads as the
+        // number 0.0, which is a valid value, and the collector only scans below `sp`.
+        let stack = unsafe { alloc_zeroed(layout) as *mut Value };
         assert!(!stack.is_null(), "cannot allocate the VM stack");
-        for i in 0..STACK_SIZE {
-            unsafe { stack.add(i).write(Value::NIL) };
-        }
         let mut vm = Vm {
             interner: Interner::new(),
             heap: Heap::new(),
