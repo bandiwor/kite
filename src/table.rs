@@ -24,6 +24,10 @@ struct Entry {
 }
 
 const EMPTY: u32 = u32::MAX;
+/// Hash parts up to this many entries have no index: a linear scan over the
+/// (insertion ordered) entries is faster than hashing and saves an allocation.
+/// Records / small objects, the most common tables, stay in this mode.
+const SMALL: usize = 8;
 
 #[derive(Default)]
 struct HashPart {
@@ -57,6 +61,11 @@ impl HashPart {
     #[inline]
     fn find(&self, key: Value, h: u32) -> Option<usize> {
         if self.index.is_empty() {
+            for (i, e) in self.entries.iter().enumerate() {
+                if keys_equal(e.key, key) {
+                    return Some(i);
+                }
+            }
             return None;
         }
         let mask = self.index.len() - 1;
@@ -100,7 +109,21 @@ impl HashPart {
             self.entries[e].val = val;
             return;
         }
-        if (self.entries.len() + 1) * 4 > self.index.len() * 3 {
+        if self.index.is_empty() {
+            if self.entries.len() < SMALL {
+                self.entries.push(Entry { key, val });
+                self.live += 1;
+                return;
+            }
+            // full: drop tombstones first, maybe that makes room
+            self.entries.retain(|e| e.key != Value::TOMB);
+            if self.entries.len() < SMALL {
+                self.entries.push(Entry { key, val });
+                self.live += 1;
+                return;
+            }
+            self.rebuild(self.live + 1);
+        } else if (self.entries.len() + 1) * 4 > self.index.len() * 3 {
             self.rebuild(self.live + 1);
         }
         let mask = self.index.len() - 1;
@@ -366,6 +389,36 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 50);
+    }
+
+    #[test]
+    fn small_mode_transitions() {
+        let mut t = Table::new(0);
+        // stay in the index-less mode, delete, reinsert, then cross the threshold
+        for i in 0..6 {
+            t.set(num(10.0 + i as f64), num(i as f64)).unwrap();
+        }
+        assert!(t.map.index.is_empty());
+        t.set(num(12.0), Value::NIL).unwrap();
+        t.set(num(99.0), num(99.0)).unwrap();
+        assert_eq!(t.len(), 6);
+        for i in 0..20 {
+            t.set(num(200.0 + i as f64), num(i as f64)).unwrap();
+        }
+        assert!(!t.map.index.is_empty());
+        assert_eq!(t.len(), 26);
+        assert_eq!(t.get(num(12.0)), Value::NIL);
+        assert_eq!(t.get(num(99.0)), num(99.0));
+        assert_eq!(t.get(num(210.0)), num(10.0));
+        // repeatedly add and remove one key while small
+        let mut u = Table::new(0);
+        for _ in 0..100 {
+            u.set(num(5.0), num(1.0)).unwrap();
+            u.set(num(5.0), Value::NIL).unwrap();
+        }
+        assert_eq!(u.len(), 0);
+        u.set(num(7.0), num(2.0)).unwrap();
+        assert_eq!(u.get(num(7.0)), num(2.0));
     }
 
     #[test]

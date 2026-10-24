@@ -113,6 +113,8 @@ fn real_main() -> u8 {
         }
     }
     vm.shutdown();
+    #[cfg(feature = "op-profile")]
+    kite::profile::report();
     if timing {
         eprintln!(
             "[time] {:.3} ms total, {} collections, {} bytes live",

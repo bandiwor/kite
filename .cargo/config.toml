@@ -1,0 +1,4 @@
+# Give every opcode handler its own copy of the indirect dispatch jump
+# ("threaded" dispatch). Worth 10-20% on tight loops.
+[build]
+rustflags = ["-C", "llvm-args=-tail-dup-indirect-size=64", "-C", "llvm-args=-tail-dup-size=64"]

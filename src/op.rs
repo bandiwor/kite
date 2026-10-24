@@ -26,6 +26,10 @@ pub enum Op {
     /// Assign and pop (produced by the compiler for declarations and by the peephole).
     StoreLocal(u16),
     GetLocal2(u16, u16),
+    /// Push `local[a] <op> local[b]`.
+    AddLL(u16, u16),
+    SubLL(u16, u16),
+    MulLL(u16, u16),
     GetUpval(u16),
     SetUpval(u16),
     StoreUpval(u16),
@@ -110,6 +114,8 @@ pub enum Op {
     TailCall(u8),
     Return,
     ReturnNil,
+    /// `GetLocal; Return`
+    ReturnLocal(u16),
     /// Create a closure from the prototype in `consts[k]`.
     Closure(u32),
 
@@ -123,6 +129,8 @@ pub enum Op {
     /// `[t, k, v] -> [t]`  (table literal `[k]: v`)
     InitIndex,
     GetField(u32),
+    /// `GetLocal; GetField`: push `local[s].name`.
+    GetLocalField(u16, u32),
     /// `[obj, v] -> [v]`
     SetField(u32),
     /// `[obj, v] -> []`
@@ -159,14 +167,14 @@ impl Op {
         use Op::*;
         match *self {
             Nil | True | False | Const(_) | Dup | GetLocal(_) | GetUpval(_) | GetGlobal(_) | Closure(_)
-            | NewTable(_) | Struct(_) | GetMethod(_) => 1,
+            | NewTable(_) | Struct(_) | GetMethod(_) | AddLL(..) | SubLL(..) | MulLL(..) | GetLocalField(..) => 1,
             Dup2 | GetLocal2(..) => 2,
             Pop | StoreLocal(_) | StoreUpval(_) | StoreGlobal(_) | DefGlobal(_) | Append | InitField(_)
             | SetField(_) | GetIndex | DefMethod(_) | Return => -1,
             PopN(n) => -(n as i32),
             SetLocal(_) | SetUpval(_) | SetGlobal(_) | CloseUpvals(_) | Neg | Not | BitNot | AddK(_) | SubK(_)
             | MulK(_) | DivK(_) | RemK(_) | AddLocalK(..) | Jump(_) | GetField(_) | ForPrep(..) | ForLoop(..)
-            | IterNext1(..) | IterNext2(..) | ReturnNil | JNotEqLL(..) | JNotNeLL(..) | JNotLtLL(..)
+            | IterNext1(..) | IterNext2(..) | ReturnNil | ReturnLocal(_) | JNotEqLL(..) | JNotNeLL(..) | JNotLtLL(..)
             | JNotLeLL(..) | JNotGtLL(..) | JNotGeLL(..) | JNotEqLK(..) | JNotNeLK(..) | JNotLtLK(..)
             | JNotLeLK(..) | JNotGtLK(..) | JNotGeLK(..) => 0,
             Add | Sub | Mul | Div | Rem | Pow | BitAnd | BitOr | BitXor | Shl | Shr | Eq | Ne | Lt | Le | Gt
@@ -230,7 +238,7 @@ impl Op {
 
     /// Ops after which control never falls through to the next instruction.
     pub fn is_terminator(&self) -> bool {
-        matches!(self, Op::Jump(_) | Op::Return | Op::ReturnNil)
+        matches!(self, Op::Jump(_) | Op::Return | Op::ReturnNil | Op::ReturnLocal(_))
     }
 }
 

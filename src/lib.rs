@@ -17,6 +17,8 @@ pub mod object;
 pub mod op;
 pub mod parser;
 pub mod peephole;
+#[cfg(feature = "op-profile")]
+pub mod profile;
 pub mod repl;
 pub mod source;
 pub mod table;

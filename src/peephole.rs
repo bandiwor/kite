@@ -26,6 +26,10 @@ fn target_of(code: &[Op], i: usize) -> Option<usize> {
     code[i].jump_offset().map(|o| (i as i64 + 1 + o as i64) as usize)
 }
 
+fn t_op(code: &[Op], i: usize) -> Option<&Op> {
+    target_of(code, i).and_then(|t| code.get(t))
+}
+
 fn thread_jumps(code: &mut [Op]) {
     for i in 0..code.len() {
         let Some(mut t) = target_of(code, i) else { continue };
@@ -43,6 +47,12 @@ fn thread_jumps(code: &mut [Op]) {
             let off = t as i64 - (i as i64 + 1);
             if let Some(op) = code[i].with_jump_offset(off as i32) {
                 code[i] = op;
+            }
+        }
+        // an unconditional jump straight to a return is just that return
+        if let (Op::Jump(_), Some(&r)) = (code[i], t_op(code, i)) {
+            if matches!(r, Op::Return | Op::ReturnNil | Op::ReturnLocal(_)) {
+                code[i] = r;
             }
         }
     }
@@ -146,6 +156,13 @@ fn match_window3(w: &[Op]) -> Option<Fused> {
 fn match_window2(w: &[Op], consts: &[Value]) -> Option<Fused> {
     let Some(&[a, b]) = w.get(..2) else { return None };
     let op = match (a, b) {
+        (Op::GetLocal(s), Op::GetField(k)) => Op::GetLocalField(s, k),
+        (Op::GetLocal(s), Op::Return) => Op::ReturnLocal(s),
+        (Op::GetLocal2(x, y), Op::Add) => Op::AddLL(x, y),
+        (Op::GetLocal2(x, y), Op::Sub) => Op::SubLL(x, y),
+        (Op::GetLocal2(x, y), Op::Mul) => Op::MulLL(x, y),
+        // `GetLocal a; GetLocal b; GetField k`: prefer `a; GetLocalField(b, k)`
+        (Op::GetLocal(_), Op::GetLocal(_)) if matches!(w.get(2), Some(Op::GetField(_))) => return None,
         (Op::SetLocal(s), Op::Pop) => Op::StoreLocal(s),
         (Op::SetUpval(s), Op::Pop) => Op::StoreUpval(s),
         (Op::SetGlobal(s), Op::Pop) => Op::StoreGlobal(s),

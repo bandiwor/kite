@@ -1250,6 +1250,24 @@ impl Vm {
                     }
                 }};
             }
+            // read `obj.name` where `name` is the interned string constant `k`
+            macro_rules! get_field {
+                ($obj:expr, $k:expr) => {{
+                    let obj: Value = $obj;
+                    let key = (*consts.add($k as usize)).as_gc_unchecked::<Str>();
+                    match obj.obj_kind() {
+                        Some(Kind::Table) => obj.as_gc_unchecked::<Table>().get_str(key),
+                        Some(Kind::Instance) => {
+                            let inst = obj.as_gc_unchecked::<Instance>();
+                            match inst.ty.field_index(key) {
+                                Some(i) => *inst.fields.get_unchecked(i),
+                                None => protect!(self.get_field_slow(obj, key)),
+                            }
+                        }
+                        _ => protect!(self.get_field_slow(obj, key)),
+                    }
+                }};
+            }
             macro_rules! enter_closure {
                 ($cl:expr, $argc:expr) => {{
                     if let Err(e) = self.push_frame($cl, $argc) {
@@ -1301,6 +1319,8 @@ impl Vm {
             loop {
                 let op = *ip;
                 ip = ip.add(1);
+                #[cfg(feature = "op-profile")]
+                crate::profile::record(&op);
                 match op {
                     // ---- constants & stack
                     Op::Nil => push!(Value::NIL),
@@ -1329,6 +1349,34 @@ impl Vm {
                     Op::GetLocal2(a, b) => {
                         push!(*base.add(a as usize));
                         push!(*base.add(b as usize));
+                    }
+                    Op::AddLL(a, b) => {
+                        let (x, y) = (*base.add(a as usize), *base.add(b as usize));
+                        if x.is_num() && y.is_num() {
+                            push!(Value::num(x.as_num() + y.as_num()));
+                        } else {
+                            let r = protect!(self.arith_slow(Arith::Add, x, y));
+                            push!(r);
+                            gc_check!();
+                        }
+                    }
+                    Op::SubLL(a, b) => {
+                        let (x, y) = (*base.add(a as usize), *base.add(b as usize));
+                        if x.is_num() && y.is_num() {
+                            push!(Value::num(x.as_num() - y.as_num()));
+                        } else {
+                            let r = protect!(self.arith_slow(Arith::Sub, x, y));
+                            push!(r);
+                        }
+                    }
+                    Op::MulLL(a, b) => {
+                        let (x, y) = (*base.add(a as usize), *base.add(b as usize));
+                        if x.is_num() && y.is_num() {
+                            push!(Value::num(x.as_num() * y.as_num()));
+                        } else {
+                            let r = protect!(self.arith_slow(Arith::Mul, x, y));
+                            push!(r);
+                        }
                     }
                     Op::GetUpval(i) => {
                         let uv = *closure!().upvals.get_unchecked(i as usize);
@@ -1543,6 +1591,10 @@ impl Vm {
                         do_return!(r);
                     }
                     Op::ReturnNil => do_return!(Value::NIL),
+                    Op::ReturnLocal(s) => {
+                        let r = *base.add(s as usize);
+                        do_return!(r);
+                    }
                     Op::Closure(k) => {
                         let proto = (*consts.add(k as usize)).as_gc_unchecked::<Proto>();
                         let mut ups: Vec<Gc<Upvalue>> = Vec::with_capacity(proto.upvals.len());
@@ -1594,27 +1646,12 @@ impl Vm {
                         self.heap.bytes += t.mem_size().saturating_sub(before);
                     }
                     Op::GetField(k) => {
-                        let obj = top!();
-                        let key = (*consts.add(k as usize)).as_gc_unchecked::<Str>();
-                        match obj.obj_kind() {
-                            Some(Kind::Table) => {
-                                *sp.sub(1) = obj.as_gc_unchecked::<Table>().get_str(key);
-                            }
-                            Some(Kind::Instance) => {
-                                let inst = obj.as_gc_unchecked::<Instance>();
-                                match inst.ty.field_index(key) {
-                                    Some(i) => *sp.sub(1) = *inst.fields.get_unchecked(i),
-                                    None => {
-                                        let v = protect!(self.get_field_slow(obj, key));
-                                        *sp.sub(1) = v;
-                                    }
-                                }
-                            }
-                            _ => {
-                                let v = protect!(self.get_field_slow(obj, key));
-                                *sp.sub(1) = v;
-                            }
-                        }
+                        let v = get_field!(top!(), k);
+                        *sp.sub(1) = v;
+                    }
+                    Op::GetLocalField(s, k) => {
+                        let v = get_field!(*base.add(s as usize), k);
+                        push!(v);
                     }
                     Op::SetField(k) | Op::StoreField(k) => {
                         let store = matches!(op, Op::StoreField(_));
