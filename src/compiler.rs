@@ -69,6 +69,9 @@ impl FnBuilder {
 }
 
 struct Compiler<'a> {
+    scratch: peephole::Scratch,
+    /// Interned runtime string per identifier, so field names are hashed once.
+    sym_strs: Vec<Option<Gc<Str>>>,
     ast: &'a Ast,
     an: &'a Analysis,
     interner: &'a Interner,
@@ -89,7 +92,19 @@ pub fn compile(
     source: &Rc<SourceFile>,
     opts: &CompileOptions,
 ) -> Result<Gc<Proto>, Vec<Diag>> {
-    let mut c = Compiler { ast, an, interner, heap, source, opts, fns: Vec::new(), errors: Vec::new(), cur: 0 };
+    let mut c = Compiler {
+        scratch: peephole::Scratch::default(),
+        sym_strs: vec![None; interner.len()],
+        ast,
+        an,
+        interner,
+        heap,
+        source,
+        opts,
+        fns: Vec::new(),
+        errors: Vec::new(),
+        cur: 0,
+    };
     let root = ast.root.expect("parsed program");
     c.fns.push(FnBuilder::new(false));
     c.expr(root);
@@ -183,8 +198,15 @@ impl<'a> Compiler<'a> {
     }
 
     fn sym_const(&mut self, s: Sym) -> u32 {
-        let text = self.interner.get(s);
-        self.str_const(text)
+        let g = match self.sym_strs[s.idx()] {
+            Some(g) => g,
+            None => {
+                let g = self.heap.intern(self.interner.get(s));
+                self.sym_strs[s.idx()] = Some(g);
+                g
+            }
+        };
+        self.add_const(Value::from(g))
     }
 
     fn pop_n(&mut self, n: i32) {
@@ -252,7 +274,7 @@ impl<'a> Compiler<'a> {
     fn finish(&mut self, fb: FnBuilder, name: Rc<str>, arity: u8, info: &FuncInfo) -> Gc<Proto> {
         let FnBuilder { code, offsets, consts, max_depth, .. } = fb;
         let (code, offsets) =
-            if self.opts.optimize { peephole::optimize(code, offsets, &consts) } else { (code, offsets) };
+            if self.opts.optimize { peephole::optimize_with(&mut self.scratch, code, offsets, &consts) } else { (code, offsets) };
         debug_assert_eq!(code.len(), offsets.len());
         let proto = Proto {
             hdr: Header::new(Kind::Proto),

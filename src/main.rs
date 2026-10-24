@@ -75,6 +75,7 @@ fn real_main() -> u8 {
     }
 
     let mut vm = Vm::new();
+    opts.timing = timing;
     vm.opts = opts;
     vm.heap.stress = gc_stress || std::env::var_os("KITE_GC_STRESS").is_some();
 

@@ -65,6 +65,8 @@ pub struct Options {
     pub dump_bytecode: bool,
     /// REPL mode: top-level names may be redeclared.
     pub repl: bool,
+    /// Print a per-phase timing line to stderr after compiling.
+    pub timing: bool,
 }
 
 pub struct Frame {
@@ -255,19 +257,39 @@ impl Vm {
             source: source.clone(),
             trace: Vec::new(),
         };
+        let t0 = std::time::Instant::now();
         let toks = lexer::lex(&source.text);
+        let t_lex = t0.elapsed();
         let ast = parser::parse(&source.text, &toks, &mut self.interner).map_err(|d| err(ErrorKind::Syntax, d, &source))?;
+        let t_parse = t0.elapsed();
         if self.opts.dump_ast {
             eprintln!("{}", ast.dump(&self.interner, &source.text));
         }
         let an = analyzer::analyze(&ast, &self.interner, &mut self.global_info, self.opts.repl)
             .map_err(|d| err(ErrorKind::Compile, d, &source))?;
+        let t_an = t0.elapsed();
         if self.globals.len() < self.interner.len() {
             self.globals.resize(self.interner.len(), Value::UNDEF);
         }
         let copts = CompileOptions { optimize: !self.opts.no_optimize };
         let proto = compiler::compile(&ast, &an, &self.interner, &mut self.heap, &source, &copts)
             .map_err(|d| err(ErrorKind::Compile, d, &source))?;
+        if self.opts.timing {
+            let t_all = t0.elapsed();
+            let us = |d: std::time::Duration| d.as_secs_f64() * 1e6;
+            eprintln!(
+                "[compile] {} bytes, {} tokens, {} ast nodes | lex {:.0}us parse {:.0}us analyze {:.0}us compile+peephole {:.0}us | total {:.0}us ({:.1} MB/s)",
+                source.text.len(),
+                toks.len(),
+                ast.nodes.len(),
+                us(t_lex),
+                us(t_parse - t_lex),
+                us(t_an - t_parse),
+                us(t_all - t_an),
+                us(t_all),
+                source.text.len() as f64 / t_all.as_secs_f64() / 1e6
+            );
+        }
         if self.opts.dump_bytecode {
             eprintln!("{}", disasm::disassemble(proto, &self.interner));
         }

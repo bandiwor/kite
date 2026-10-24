@@ -29,9 +29,9 @@ pub fn parse_number(text: &str) -> Option<f64> {
 }
 
 /// Process escape sequences of a string literal body.
-pub fn unescape(raw: &str) -> Result<String, String> {
+pub fn unescape(raw: &str) -> Result<std::borrow::Cow<'_, str>, String> {
     if !raw.contains('\\') {
-        return Ok(raw.to_string());
+        return Ok(std::borrow::Cow::Borrowed(raw));
     }
     let mut out = String::with_capacity(raw.len());
     let mut it = raw.chars();
@@ -75,7 +75,7 @@ pub fn unescape(raw: &str) -> Result<String, String> {
             None => return Err("dangling backslash".to_string()),
         }
     }
-    Ok(out)
+    Ok(out.into())
 }
 
 /// Format a number the way `print` shows it: integral values without `.0`.
