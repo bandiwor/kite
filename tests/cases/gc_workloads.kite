@@ -1,0 +1,54 @@
+// allocation-heavy programs; run with a GC at every safe point as well
+fn make_tree(d) {
+    if d == 0 { return { leaf: true }; }
+    { left: make_tree(d - 1), right: make_tree(d - 1), depth: d }
+}
+fn count(t) { if t.leaf { 1 } else { count(t.left) + count(t.right) } }
+print(count(make_tree(10)));   // expect: 1024
+
+// strings built and dropped
+var s = "";
+for i in 0..200 { s = s + "ab"; }
+print(len(s));   // expect: 400
+const words = [];
+for i in 0..300 { push(words, "w" + i); }
+print(len(string.join(words, " ")));   // expect: 1389
+
+// closures created in bulk, a few kept
+var kept = [];
+for i in 0..500 {
+    const c = || => i * 2;
+    if i % 100 == 0 { push(kept, c); }
+}
+var total = 0;
+for f in kept { total += f(); }
+print(total);   // expect: 2000
+
+// tables of tables with deletion
+const reg = {};
+for i in 0..200 { reg["k" + i] = [i, { v: i }]; }
+for i in 0..200 { if i % 2 == 1 { reg["k" + i] = nil; } }
+var sum = 0;
+for k, v in reg { sum += v[1].v; }
+print(len(reg), sum);   // expect: 100 9900
+
+// callbacks that allocate while the collector runs
+const sorted = sort(map([5, 3, 9, 1, 7], |x| => { id: x }), |a, b| => { const tmp = [a.id, b.id]; tmp[0] < tmp[1] });
+print(map(sorted, |o| => o.id));   // expect: [1, 3, 5, 7, 9]
+
+// struct instances with allocating operator overloads
+struct Num { v }
+impl Num {
+    fn new(self, v) { self.v = v; }
+    fn add(a, b) { Num(a.v + b.v) }
+    fn str(a) { "Num(" + a.v + ")" }
+}
+var acc = Num(0);
+for i in 0..300 { acc = acc + Num(i); }
+print(acc);   // expect: Num(44850)
+
+// heap stays bounded: a long allocation loop must not accumulate garbage
+const before = mem();
+for i in 0..20000 { const tmp = [i, "s" + i, { a: i }]; }
+gc();
+print(mem() < before + 100000);   // expect: true

@@ -1,0 +1,16 @@
+fn run() {
+    const t = {};
+    for i in 0..1000000 {
+        t[i * 3] = i;
+    }
+    var sum = 0;
+    for k, v in t { sum += v; }
+    for i in 0..1000000 {
+        sum += t[i * 3];
+    }
+    const a = [];
+    for i in 0..2000000 { push(a, i); }
+    for i in 0..2000000 { sum += a[i]; }
+    sum
+}
+print(run());

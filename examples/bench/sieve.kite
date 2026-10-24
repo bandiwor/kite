@@ -1,0 +1,17 @@
+fn sieve(n) {
+    const flags = [];
+    for i in 0..n + 1 { push(flags, true); }
+    var count = 0;
+    for i in 2..n + 1 {
+        if flags[i] {
+            count += 1;
+            var j = i * i;
+            while j <= n {
+                flags[j] = false;
+                j += i;
+            }
+        }
+    }
+    count
+}
+print(sieve(5000000));

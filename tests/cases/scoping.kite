@@ -1,0 +1,54 @@
+// shadowing and block scope
+var x = "outer";
+{
+    var x = "inner";
+    print(x);   // expect: inner
+}
+print(x);   // expect: outer
+fn shadow(x) { var y = x; { var x = y + 1; y = x; } y }
+print(shadow(1));   // expect: 2
+
+// a variable is not visible in its own initialiser (except functions)
+var a = 1;
+{
+    var a = a + 1;
+    print(a);   // expect: 2
+}
+print(a);   // expect: 1
+
+// globals can be reassigned from functions and declared after use
+fn bump() { counter += 1; counter }
+var counter = 10;
+print(bump(), bump());   // expect: 11 12
+fn use_later() { later_defined * 2 }
+const later_defined = 21;
+print(use_later());   // expect: 42
+
+// slots are reused between sibling scopes without leaking values
+fn slots() {
+    { var a = 1; var b = 2; }
+    { var c; print(c); }   // expect: nil
+    var d = 5;
+    d
+}
+print(slots());   // expect: 5
+
+// loop variables and hidden state do not clash with locals
+fn loops() {
+    var out = [];
+    for i in 0..3 {
+        var tmp = i * 2;
+        for j in 0..2 { push(out, tmp + j); }
+    }
+    out
+}
+print(loops());   // expect: [0, 1, 2, 3, 4, 5]
+
+// block expression value
+const blockv = do { var q = 3; q * q };
+print(blockv);   // expect: 9
+// statement-level blocks and the empty statement
+{ print("blk"); }   // expect: blk
+;;
+// the value of a program is its last expression
+1 + 1

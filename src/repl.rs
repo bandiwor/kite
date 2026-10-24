@@ -46,8 +46,10 @@ pub fn run(vm: &mut Vm) {
                 continue;
             }
         }
+        let blank = line.trim().is_empty();
         buf.push_str(&line);
-        if lexer::is_incomplete(&buf) {
+        // a blank line abandons a continuation and shows the error
+        if !blank && (lexer::is_incomplete(&buf) || ends_unexpectedly(vm, &buf)) {
             continue;
         }
         let src = std::mem::take(&mut buf);
@@ -68,6 +70,15 @@ pub fn run(vm: &mut Vm) {
         }
     }
     vm.shutdown();
+}
+
+/// `x = 1 +` : the parser ran into the end of input, so more is expected.
+fn ends_unexpectedly(vm: &mut Vm, src: &str) -> bool {
+    let toks = lexer::lex(src);
+    match crate::parser::parse(src, &toks, &mut vm.interner) {
+        Ok(_) => false,
+        Err(diags) => diags.iter().any(|d| d.msg.contains("end of input") || d.msg.contains("unclosed")),
+    }
 }
 
 fn command(vm: &mut Vm, cmd: &str) -> bool {

@@ -1,0 +1,12 @@
+struct V { x, y }
+impl V {
+    fn new(self, x, y) { self.x = x; self.y = y; }
+    fn add(a, b) { V(a.x + b.x, a.y + b.y) }
+}
+fn run() {
+    var acc = V(0, 0);
+    const one = V(1, 2);
+    for i in 0..3000000 { acc = acc + one; }
+    acc.x + acc.y
+}
+print(run());

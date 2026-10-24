@@ -1393,13 +1393,13 @@ impl Vm {
                     Op::Sub => arith!(Arith::Sub, a, b, a - b),
                     Op::Mul => arith!(Arith::Mul, a, b, a * b),
                     Op::Div => arith!(Arith::Div, a, b, a / b),
-                    Op::Rem => arith!(Arith::Rem, a, b, a % b),
+                    Op::Rem => arith!(Arith::Rem, a, b, rem_f64(a, b)),
                     Op::Pow => arith!(Arith::Pow, a, b, a.powf(b)),
                     Op::AddK(k) => arith_k!(Arith::Add, k, a, b, a + b),
                     Op::SubK(k) => arith_k!(Arith::Sub, k, a, b, a - b),
                     Op::MulK(k) => arith_k!(Arith::Mul, k, a, b, a * b),
                     Op::DivK(k) => arith_k!(Arith::Div, k, a, b, a / b),
-                    Op::RemK(k) => arith_k!(Arith::Rem, k, a, b, a % b),
+                    Op::RemK(k) => arith_k!(Arith::Rem, k, a, b, rem_f64(a, b)),
                     Op::AddLocalK(s, k) => {
                         let slot = base.add(s as usize);
                         let a = *slot;
@@ -1701,10 +1701,15 @@ impl Vm {
                         gc_check!();
                     }
                     Op::DefMethod(k) => {
-                        let f = pop!();
-                        let mut ty = top!().as_gc_unchecked::<StructType>();
-                        let name = (*consts.add(k as usize)).as_gc_unchecked::<Str>();
-                        ty.set_method(name, f);
+                        let target = peek!(1);
+                        match target.as_gc::<StructType>() {
+                            Some(mut ty) => {
+                                let f = pop!();
+                                let name = (*consts.add(k as usize)).as_gc_unchecked::<Str>();
+                                ty.set_method(name, f);
+                            }
+                            None => throw!("`impl` target must be a struct, got {}", self.type_of(target)),
+                        }
                     }
 
                     // ---- loops
@@ -1764,7 +1769,7 @@ fn arith_num(op: Arith, a: f64, b: f64) -> f64 {
         Arith::Sub => a - b,
         Arith::Mul => a * b,
         Arith::Div => a / b,
-        Arith::Rem => a % b,
+        Arith::Rem => rem_f64(a, b),
         Arith::Pow => a.powf(b),
         Arith::BitAnd => ((a as i64) & (b as i64)) as f64,
         Arith::BitOr => ((a as i64) | (b as i64)) as f64,
@@ -1772,6 +1777,21 @@ fn arith_num(op: Arith, a: f64, b: f64) -> f64 {
         Arith::Shl => (a as i64).wrapping_shl((b as i64 & 63) as u32) as f64,
         Arith::Shr => (a as i64).wrapping_shr((b as i64 & 63) as u32) as f64,
     }
+}
+
+/// `a % b` with C `fmod` semantics.  `fmod` is slow, so integral operands
+/// (the overwhelmingly common case) take an integer path.
+#[inline(always)]
+pub fn rem_f64(a: f64, b: f64) -> f64 {
+    if a.abs() < 9.0e15 && b.abs() < 9.0e15 {
+        let (ai, bi) = (a as i64, b as i64);
+        if ai as f64 == a && bi as f64 == b && bi != 0 {
+            let r = (ai % bi) as f64;
+            // fmod keeps the sign of the dividend even for a zero result
+            return if r == 0.0 && a.is_sign_negative() { -0.0 } else { r };
+        }
+    }
+    a % b
 }
 
 pub fn is_ident(s: &str) -> bool {

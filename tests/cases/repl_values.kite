@@ -1,0 +1,19 @@
+// operator corner cases and truthiness
+print(!nil, !0, !"", ![], !!1);   // expect: true false false false true
+print(nil == nil, nil == false, 0 == false, "1" == 1);   // expect: true false false false
+print(1 == 1.0, "a" + "b" == "ab", [1] == [1]);   // expect: true true false
+const t = [1];
+print(t == t);   // expect: true
+var calls = 0;
+fn side() { calls += 1; true }
+false && side(); true || side();
+print(calls);   // expect: 0
+true && side(); false || side();
+print(calls);   // expect: 2
+print(1 < 2 == true);   // expect: true
+print(2 + 3 * 4 - 6 / 2);   // expect: 11
+print(1 << 2 + 1);   // expect: 8
+print(-3 % 5, (0 - 3) % 5);   // expect: -3 -3
+print(10 - 2 - 3, 100 / 10 / 5, 2 ** 2 ** 3);   // expect: 5 2 256
+print(1 + 2 < 4 && 5 > 3);   // expect: true
+print(7 & 3 == 3);   // expect: true

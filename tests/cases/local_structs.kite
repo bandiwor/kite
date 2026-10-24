@@ -1,0 +1,50 @@
+// structs and impl blocks inside functions; each call creates a fresh type
+fn make() {
+    struct Local { v }
+    impl Local {
+        fn new(self, v) { self.v = v * 2; }
+        fn add(a, b) { Local(a.v + b.v) }
+    }
+    return Local;
+}
+const A = make();
+const B = make();
+const x = A(1) + A(2);
+print(x.v);   // expect: 12
+print(A == B, type(A(1)), type(B(1)));   // expect: false Local Local
+
+// methods can be redefined by a later impl; the last one wins
+struct S { a }
+impl S { fn describe(self) { "first" } }
+impl S { fn describe(self) { "second" } }
+print(S(1):describe());   // expect: second
+
+// constructor result is always the instance, whatever `new` returns
+struct R { a }
+impl R {
+    fn new(self, a) { self.a = a; return 99; }
+}
+print(R(5).a, type(R(5)));   // expect: 5 R
+
+// a constructor may call other functions and use closures
+struct W { items }
+impl W {
+    fn new(self, n) {
+        self.items = [];
+        for i in 0..n { push(self.items, || => i); }
+    }
+}
+const w = W(3);
+print(w.items[2]());   // expect: 2
+
+// struct instances as table keys use identity
+const k1 = S(1);
+const k2 = S(1);
+const m = {};
+m[k1] = "one"; m[k2] = "two";
+print(m[k1], m[k2], len(m));   // expect: one two 2
+
+// `eq` hook makes == structural but tables still key by identity
+struct P { x }
+impl P { fn eq(a, b) { a.x == b.x } }
+print(P(1) == P(1), P(1) != P(2));   // expect: true true

@@ -1,0 +1,11 @@
+fn make_counter() {
+    var n = 0;
+    return || => { n += 1; n };
+}
+fn run() {
+    const c = make_counter();
+    var s = 0;
+    for i in 0..10000000 { s += c(); }
+    s
+}
+print(run());

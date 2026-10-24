@@ -1,0 +1,24 @@
+const s = "Hello, World";
+print(len(s), s:upper(), s:lower());   // expect: 12 HELLO, WORLD hello, world
+print(s:sub(0, 5), s:sub(7), s:sub(-5), s:sub(3, -3));   // expect: Hello World World lo, Wo
+print(s:find("World"), s:find("xyz"), s:find("o", 5));   // expect: 7 nil 8
+print(s:contains("lo, W"), s:starts_with("Hell"), s:ends_with("d"));   // expect: true true true
+print("a,b,,c":split(","));   // expect: ["a", "b", "", "c"]
+print(string.join(["x", 1, true, nil], "-"));   // expect: x-1-true
+print("  trim me  ":trim() + "|");   // expect: trim me|
+print("aXbXc":replace("X", "--"));   // expect: a--b--c
+print("ab":rep(3), "abc":reverse());   // expect: ababab cba
+print("héllo":len(), "héllo":upper(), "héllo":sub(1, 3));   // expect: 5 HÉLLO él
+print(string.byte("A"), string.char(97), string.char(0x1F600));   // expect: 65 a 😀
+print("abc"[0], "abc"[2], "abc"[-1], "abc"[5]);   // expect: a c c nil
+print(string.chars("hi"));   // expect: ["h", "i"]
+print(string.format("{} + {} = {}", 1, 2, 3));   // expect: 1 + 2 = 3
+print(string.format("pi={:.3} [{:>6}] [{:<6}] {{}}", 3.14159, "ab", "cd"));   // expect: pi=3.142 [    ab] [cd    ] {}
+print("tab\there", "quote\"d", 'single', "nl\\n");   // expect: tab	here quote"d single nl\n
+print("\u{48}\x49\0end":len());   // expect: 6
+print(str(12), str(1.5), str(nil), str(true), str([1]), num("42"), num("3.5"), num("0x10"), num("abc"), num("-7"));   // expect: 12 1.5 nil true [1] 42 3.5 16 nil -7
+print("a" < "b", "abc" < "abd", "Z" < "a", "" < "a");   // expect: true true true true
+print(1e3, 1.5e-3, 123456789012, 0.1 + 0.2, 1e100, -0.0, 100 / 3);   // expect: 1000 0.0015 123456789012 0.30000000000000004 1e100 -0 33.333333333333336
+print(2 ** 0.5, 10 ** 15, 10 ** 16, 255 / 5);   // expect: 1.4142135623730951 1000000000000000 1e16 51
+print(math.floor(-1.5), math.ceil(1.2), math.round(2.5), math.abs(-3), math.max(1, 9, 3), math.min(4, 2), math.sqrt(16));   // expect: -2 2 3 3 9 2 4
+print(math.pi > 3.14, math.huge, math.sign(-4));   // expect: true inf -1

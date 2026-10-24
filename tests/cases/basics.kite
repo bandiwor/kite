@@ -25,3 +25,7 @@ print(x);      // expect: 1
 var s = 0xF0; s &= 0x3C; s |= 1; s ^= 0xFF; s <<= 1; s >>= 2;
 print(s);      // expect: 103
 print(type(1), type("s"), type(nil), type(true), type([]), type(print), type(|| => 1));  // expect: number string nil bool table function function
+// modulo semantics (integer fast path vs fmod)
+print(7 % 3, -7 % 3, 7 % -3, -7 % -3);   // expect: 1 -1 1 -1
+print(5.5 % 2, -5.5 % 2, 1e20 % 7 >= 0);   // expect: 1.5 -1.5 true
+print(5 % 0 != 5 % 0, 0 % 5, -4 % 2);   // expect: true 0 -0

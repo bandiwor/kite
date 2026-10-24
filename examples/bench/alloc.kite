@@ -1,0 +1,12 @@
+// allocation heavy: lots of short-lived tables and closures
+fn run() {
+    var keep = [];
+    var total = 0;
+    for i in 0..2000000 {
+        const t = { a: i, b: [i, i + 1] };
+        total += t.b[1];
+        if i % 100000 == 0 { push(keep, t); }
+    }
+    total + len(keep)
+}
+print(run());

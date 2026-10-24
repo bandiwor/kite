@@ -467,7 +467,15 @@ impl<'a> Parser<'a> {
             T::If | T::While | T::Loop | T::For | T::LBrace | T::Do => {
                 // A block-like expression in statement position ends the statement
                 // by itself (like Rust).  `{` here is a block, never a table literal.
-                let e = if self.kind() == T::LBrace { self.parse_block()? } else { self.parse_prefix()? };
+                // `{ key: … }` at statement start is a table literal (so a function can end
+                // with one); anything else, including `{}`, is a block.
+                let e = if self.kind() == T::LBrace && self.looks_like_table_with(false) {
+                    return self.parse_expr_stmt(top);
+                } else if self.kind() == T::LBrace {
+                    self.parse_block()?
+                } else {
+                    self.parse_prefix()?
+                };
                 if self.eat(T::Semi) {
                     return Ok(StmtResult::Stmt(e));
                 }
@@ -476,21 +484,23 @@ impl<'a> Parser<'a> {
                 }
                 Ok(StmtResult::Stmt(e))
             }
-            _ => {
-                let e = self.parse_expr()?;
-                if self.eat(T::Semi) {
-                    return Ok(StmtResult::Stmt(e));
-                }
-                if self.kind() == T::RBrace || (top && self.kind() == T::Eof) {
-                    return Ok(StmtResult::Tail(e));
-                }
-                if self.prev_is_rbrace() {
-                    return Ok(StmtResult::Stmt(e));
-                }
-                let found = self.describe_current();
-                self.err(format!("expected `;` after expression, found {}", found))
-            }
+            _ => self.parse_expr_stmt(top),
         }
+    }
+
+    fn parse_expr_stmt(&mut self, top: bool) -> PResult<StmtResult> {
+        let e = self.parse_expr()?;
+        if self.eat(T::Semi) {
+            return Ok(StmtResult::Stmt(e));
+        }
+        if self.kind() == T::RBrace || (top && self.kind() == T::Eof) {
+            return Ok(StmtResult::Tail(e));
+        }
+        if self.prev_is_rbrace() {
+            return Ok(StmtResult::Stmt(e));
+        }
+        let found = self.describe_current();
+        self.err(format!("expected `;` after expression, found {}", found))
     }
 
     /// A statement ending in `}` (block, `loop`, table literal, lambda body …)
@@ -604,8 +614,12 @@ impl<'a> Parser<'a> {
     /// possible (lambda bodies): `{}`, `{ key: …`, `{ "k": …`, `{ [e]: …` and
     /// `{ name, …` are tables, everything else is a block.
     fn looks_like_table(&self) -> bool {
+        self.looks_like_table_with(true)
+    }
+
+    fn looks_like_table_with(&self, empty_is_table: bool) -> bool {
         match self.kind_at(1) {
-            T::RBrace => true,
+            T::RBrace => empty_is_table,
             T::Ident => matches!(self.kind_at(2), T::Colon | T::Comma),
             T::String | T::Number => self.kind_at(2) == T::Colon,
             T::LBracket => {

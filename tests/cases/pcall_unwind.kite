@@ -1,0 +1,37 @@
+// errors are catchable and leave the VM consistent
+const r1 = pcall(|| => 1 + nil);
+print(r1[0], r1[1]);   // expect: false invalid operands for '+': number and nil
+const r2 = pcall(|a, b| => a + b, 2, 3);
+print(r2[0], r2[1]);   // expect: true 5
+print(pcall(error, "boom")[1]);   // expect: boom
+
+// an upvalue captured by a frame that is unwound by an error stays valid
+var leaked = nil;
+fn thrower() {
+    var local = 41;
+    leaked = || => { local += 1; local };
+    error("fail");
+}
+print(pcall(thrower)[0]);   // expect: false
+print(leaked(), leaked());   // expect: 42 43
+
+// stack overflow is an ordinary, recoverable error
+fn deep(n) { 1 + deep(n + 1) }
+const so = pcall(deep, 0);
+print(so[0], so[1]);   // expect: false stack overflow
+fn depth(n) { if n == 0 { 0 } else { 1 + depth(n - 1) } }
+print(depth(10000));   // expect: 10000
+
+// nested pcalls and errors raised in callbacks
+const nested = pcall(|| => map([1, 2, 3], |x| => if x == 2 { error("in map") } else { x }));
+print(nested[0], nested[1]);   // expect: false in map
+print(pcall(|| => pcall(|| => error("inner"))[1])[1]);   // expect: inner
+
+// assert
+print(pcall(assert, false, "assertion message")[1]);   // expect: assertion message
+print(pcall(assert, 1 == 1)[0]);   // expect: true
+
+// after all of that the machine still works
+var s = 0;
+for i in 0..100 { s += i; }
+print(s);   // expect: 4950

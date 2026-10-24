@@ -1,0 +1,3 @@
+// error: `impl` target must be a struct, got number
+const notstruct = 5;
+impl notstruct { fn f() { 1 } }
