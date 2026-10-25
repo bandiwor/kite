@@ -1,0 +1,38 @@
+// blocks are expressions and may be operands
+print({1} + {2});   // expect: 3
+const x = {1} + {2} * {3};
+print(x);   // expect: 7
+print({ var t = 2; t * 3 } + 1);   // expect: 7
+print(1 + { var t = 2; t * 3 });   // expect: 7
+print({10} - {4}, {10} < {20}, {1} == {1}, {"a"} + {"b"});   // expect: 6 true true ab
+var a = 5; var b = 6;
+print({a} + {b});   // expect: 11
+print({a} * {b} - {1});   // expect: 29
+print({ -1 });   // expect: -1
+fn f2(p, q) { p + q }
+print(f2({1} + {2}, {3}));   // expect: 6
+
+// at statement start a block followed by an operator is an operand
+{1} + {2};
+print({ 7 } && { 8 });   // expect: 8
+const r = do { 5 } + do { 6 };
+print(r);   // expect: 11
+fn g() { {20} + {22} }
+print(g());   // expect: 42
+const lam = || => {1} + {2};
+print(lam());   // expect: 3
+const lam2 = |v| => { v } + {10};
+print(lam2(5));   // expect: 15
+
+// table literals are unaffected
+print({});   // expect: []
+print({ a: 1 }, { "k": 2 }, { [1 + 1]: 3 }, { 7: 8 });   // expect: {a: 1} {k: 2} {2: 3} {7: 8}
+const sh = 9;
+print({ sh });   // expect: {sh: 9}
+print({ a, b });   // expect: {a: 5, b: 6}
+print(len({ x: 1, y: 2 }));   // expect: 2
+print({ q: {1} + {2} });   // expect: {q: 3}
+
+// statement level: blocks and tables
+{ print("in block"); }   // expect: in block
+{ a: 1 }

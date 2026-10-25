@@ -472,12 +472,19 @@ impl<'a> Parser<'a> {
                 // by itself (like Rust).  `{` here is a block, never a table literal.
                 // `{ key: … }` at statement start is a table literal (so a function can end
                 // with one); anything else, including `{}`, is a block.
-                let e = if self.kind() == T::LBrace && self.looks_like_table_with(false) {
+                let was_plain_block = matches!(self.kind(), T::LBrace | T::Do);
+                let e = if self.kind() == T::LBrace && self.brace_is_table(Brace::Stmt) {
                     return self.parse_expr_stmt(top);
                 } else if self.kind() == T::LBrace {
                     self.parse_block()?
                 } else {
                     self.parse_prefix()?
+                };
+                // `{1} + {2};` : a plain block (or `do { }`) followed by an operator is an operand
+                let e = if was_plain_block && continues_after_block(self.kind()) {
+                    self.parse_infix(e, 0)?
+                } else {
+                    e
                 };
                 if self.eat(T::Semi) {
                     return Ok(StmtResult::Stmt(e));
@@ -593,11 +600,16 @@ impl<'a> Parser<'a> {
             }
         }
         let params = self.finish_list(mark);
-        let body = if self.kind() == T::LBrace && !self.looks_like_table() {
+        let body = if self.kind() == T::LBrace && !self.brace_is_table(Brace::Lambda) {
             self.parse_block()?
         } else if self.eat(T::Arrow) {
-            if self.kind() == T::LBrace && !self.looks_like_table() {
-                self.parse_block()?
+            if self.kind() == T::LBrace && !self.brace_is_table(Brace::Lambda) {
+                let b = self.parse_block()?;
+                if continues_after_block(self.kind()) {
+                    self.parse_infix(b, 0)?
+                } else {
+                    b
+                }
             } else {
                 self.parse_expr()?
             }
@@ -613,17 +625,27 @@ impl<'a> Parser<'a> {
 
     // ---- expressions ---------------------------------------------------------
 
-    /// At a `{` in a position where both a block and a table literal are
-    /// possible (lambda bodies): `{}`, `{ key: …`, `{ "k": …`, `{ [e]: …` and
-    /// `{ name, …` are tables, everything else is a block.
-    fn looks_like_table(&self) -> bool {
-        self.looks_like_table_with(true)
-    }
-
-    fn looks_like_table_with(&self, empty_is_table: bool) -> bool {
+    /// At a `{` where both a block and a table literal are possible.  Tables are
+    /// recognised by their first tokens: `{ key: …`, `{ "k": …`, `{ 1: …`, `{ [e]: …`,
+    /// `{ name, …`.  Context decides the ambiguous rest:
+    ///  * `{}`: a table, except at statement start (empty block);
+    ///  * `{ name }`: shorthand table in expression position - unless a binary operator
+    ///    precedes or follows it (`{a} + {b}`), then it is a block; a block at statement
+    ///    start and in lambda bodies.
+    ///
+    /// Everything else (`{1}`, `{ f(x) }`, `{ var t = 1; t }`, …) is a block.
+    fn brace_is_table(&self, ctx: Brace) -> bool {
         match self.kind_at(1) {
-            T::RBrace => empty_is_table,
-            T::Ident => matches!(self.kind_at(2), T::Colon | T::Comma),
+            T::RBrace => ctx != Brace::Stmt,
+            T::Ident => match self.kind_at(2) {
+                T::Colon | T::Comma => true,
+                T::RBrace => {
+                    ctx == Brace::Expr
+                        && !continues_after_block(self.kind_at(3))
+                        && !(self.pos > 0 && continues_after_block(self.toks[self.pos - 1].kind()))
+                }
+                _ => false,
+            },
             T::String | T::Number => self.kind_at(2) == T::Colon,
             T::LBracket => {
                 // find the matching `]` and look for `:` after it
@@ -654,7 +676,14 @@ impl<'a> Parser<'a> {
 
     fn parse_bp(&mut self, min_bp: u8) -> PResult<NodeId> {
         self.enter()?;
-        let mut lhs = self.parse_prefix()?;
+        let lhs = self.parse_prefix()?;
+        let r = self.parse_infix(lhs, min_bp);
+        self.leave();
+        r
+    }
+
+    /// Continue an expression whose first operand `lhs` has already been parsed.
+    fn parse_infix(&mut self, mut lhs: NodeId, min_bp: u8) -> PResult<NodeId> {
         loop {
             let tok = self.tok();
             let k = tok.kind();
@@ -716,7 +745,6 @@ impl<'a> Parser<'a> {
                 }
             }
         }
-        self.leave();
         Ok(lhs)
     }
 
@@ -801,7 +829,13 @@ impl<'a> Parser<'a> {
                 let items = self.parse_args(T::RBracket)?;
                 Ok(self.ast.push(Node::Array { items }, pos))
             }
-            T::LBrace => self.parse_table_literal(),
+            T::LBrace => {
+                if self.brace_is_table(Brace::Expr) {
+                    self.parse_table_literal()
+                } else {
+                    self.parse_block()
+                }
+            }
             T::Pipe | T::PipePipe => self.parse_lambda(),
             T::Fn => {
                 self.pos += 1;
@@ -965,6 +999,41 @@ impl<'a> Parser<'a> {
         self.expect(T::RBrace, "to close the table literal")?;
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Brace {
+    Stmt,
+    Lambda,
+    Expr,
+}
+
+/// Binary operators that can continue an expression after a block: nothing else
+/// that can start a statement is in this set except `-`, `|` and `||`, which are
+/// treated as operators here (`{1} - {2}`).
+fn continues_after_block(k: TokenKind) -> bool {
+    matches!(
+        k,
+        T::Plus
+            | T::Minus
+            | T::Star
+            | T::Slash
+            | T::Percent
+            | T::StarStar
+            | T::Amp
+            | T::Pipe
+            | T::Caret
+            | T::Shl
+            | T::Shr
+            | T::AmpAmp
+            | T::PipePipe
+            | T::EqEq
+            | T::BangEq
+            | T::Lt
+            | T::Le
+            | T::Gt
+            | T::Ge
+    )
 }
 
 enum StmtResult {
