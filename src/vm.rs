@@ -249,6 +249,12 @@ impl Vm {
 
     /// Compile and run `src`; returns the value of the final expression.
     pub fn eval(&mut self, name: &str, src: &str) -> Result<Value, KiteError> {
+        let (proto, source) = self.compile(name, src)?;
+        self.run_main(proto).map_err(|e| self.to_kite_error(*e, &source))
+    }
+
+    /// Run the front end and the compiler without executing anything.
+    pub fn compile(&mut self, name: &str, src: &str) -> Result<(Gc<Proto>, Rc<SourceFile>), KiteError> {
         let source = SourceFile::new(name, src);
         let err = |kind: ErrorKind, diags: Vec<Diag>, source: &Rc<SourceFile>| KiteError {
             kind,
@@ -293,7 +299,7 @@ impl Vm {
         if self.opts.dump_bytecode {
             eprintln!("{}", disasm::disassemble(proto, &self.interner));
         }
-        self.run_main(proto).map_err(|e| self.to_kite_error(*e, &source))
+        Ok((proto, source))
     }
 
     fn to_kite_error(&self, e: RtError, fallback: &Rc<SourceFile>) -> KiteError {
@@ -1267,19 +1273,29 @@ impl Vm {
                     }
                 }};
             }
+            // the offset of a double instruction lives in the word after it
+            macro_rules! ext {
+                () => {{
+                    let w = *ip;
+                    ip = ip.add(1);
+                    w.simm24()
+                }};
+            }
             macro_rules! jnot_ll {
-                ($kind:expr, $a:expr, $b:expr, $o:expr, $fast:expr) => {{
+                ($kind:expr, $a:expr, $b:expr, $fast:expr) => {{
+                    let o = ext!();
                     let t = cmp_val!($kind, *base.add($a as usize), *base.add($b as usize), $fast);
                     if !t {
-                        jump!($o);
+                        jump!(o);
                     }
                 }};
             }
             macro_rules! jnot_lk {
-                ($kind:expr, $a:expr, $k:expr, $o:expr, $fast:expr) => {{
+                ($kind:expr, $a:expr, $k:expr, $fast:expr) => {{
+                    let o = ext!();
                     let t = cmp_val!($kind, *base.add($a as usize), *consts.add($k as usize), $fast);
                     if !t {
-                        jump!($o);
+                        jump!(o);
                     }
                 }};
             }
@@ -1287,7 +1303,7 @@ impl Vm {
             macro_rules! get_field {
                 ($obj:expr, $k:expr) => {{
                     let obj: Value = $obj;
-                    let key = (*consts.add($k as usize)).as_gc_unchecked::<Str>();
+                    let key = (*consts.add($k)).as_gc_unchecked::<Str>();
                     match obj.obj_kind() {
                         Some(Kind::Table) => obj.as_gc_unchecked::<Table>().get_str(key),
                         Some(Kind::Instance) => {
@@ -1357,7 +1373,7 @@ impl Vm {
                     Op::Nil => push!(Value::NIL),
                     Op::True => push!(Value::TRUE),
                     Op::False => push!(Value::FALSE),
-                    Op::Const(k) => push!(*consts.add(k as usize)),
+                    Op::Const(_) => push!(*consts.add(op.imm24() as usize)),
                     Op::Pop => sp = sp.sub(1),
                     Op::PopN(n) => sp = sp.sub(n as usize),
                     Op::Dup => {
@@ -1423,31 +1439,31 @@ impl Vm {
                         let loc = uv.location;
                         *loc = pop!();
                     }
-                    Op::GetGlobal(s) => {
-                        let v = *self.globals.get_unchecked(s as usize);
+                    Op::GetGlobal(_) => {
+                        let v = *self.globals.get_unchecked(op.imm24() as usize);
                         if v == Value::UNDEF {
-                            throw!("undefined variable '{}'", self.interner.get(Sym(s)));
+                            throw!("undefined variable '{}'", self.interner.get(Sym(op.imm24())));
                         }
                         push!(v);
                     }
-                    Op::SetGlobal(s) => {
-                        let slot = self.globals.get_unchecked_mut(s as usize);
+                    Op::SetGlobal(_) => {
+                        let slot = self.globals.get_unchecked_mut(op.imm24() as usize);
                         if *slot == Value::UNDEF {
-                            throw!("assignment to undefined variable '{}'", self.interner.get(Sym(s)));
+                            throw!("assignment to undefined variable '{}'", self.interner.get(Sym(op.imm24())));
                         }
                         *slot = top!();
                     }
-                    Op::StoreGlobal(s) => {
+                    Op::StoreGlobal(_) => {
                         let v = pop!();
-                        let slot = self.globals.get_unchecked_mut(s as usize);
+                        let slot = self.globals.get_unchecked_mut(op.imm24() as usize);
                         if *slot == Value::UNDEF {
-                            throw!("assignment to undefined variable '{}'", self.interner.get(Sym(s)));
+                            throw!("assignment to undefined variable '{}'", self.interner.get(Sym(op.imm24())));
                         }
                         *slot = v;
                     }
-                    Op::DefGlobal(s) => {
+                    Op::DefGlobal(_) => {
                         let v = pop!();
-                        *self.globals.get_unchecked_mut(s as usize) = v;
+                        *self.globals.get_unchecked_mut(op.imm24() as usize) = v;
                     }
                     Op::CloseUpvals(n) => {
                         if !self.open_upvals.is_empty() {
@@ -1474,11 +1490,11 @@ impl Vm {
                     Op::Div => arith!(Arith::Div, a, b, a / b),
                     Op::Rem => arith!(Arith::Rem, a, b, rem_f64(a, b)),
                     Op::Pow => arith!(Arith::Pow, a, b, a.powf(b)),
-                    Op::AddK(k) => arith_k!(Arith::Add, k, a, b, a + b),
-                    Op::SubK(k) => arith_k!(Arith::Sub, k, a, b, a - b),
-                    Op::MulK(k) => arith_k!(Arith::Mul, k, a, b, a * b),
-                    Op::DivK(k) => arith_k!(Arith::Div, k, a, b, a / b),
-                    Op::RemK(k) => arith_k!(Arith::Rem, k, a, b, rem_f64(a, b)),
+                    Op::AddK(_) => arith_k!(Arith::Add, op.imm24(), a, b, a + b),
+                    Op::SubK(_) => arith_k!(Arith::Sub, op.imm24(), a, b, a - b),
+                    Op::MulK(_) => arith_k!(Arith::Mul, op.imm24(), a, b, a * b),
+                    Op::DivK(_) => arith_k!(Arith::Div, op.imm24(), a, b, a / b),
+                    Op::RemK(_) => arith_k!(Arith::Rem, op.imm24(), a, b, rem_f64(a, b)),
                     Op::AddLocalK(s, k) => {
                         let slot = base.add(s as usize);
                         let a = *slot;
@@ -1551,51 +1567,51 @@ impl Vm {
                     Op::Ge => compare!(Cmp::Ge, a, b, a >= b),
 
                     // ---- jumps
-                    Op::Jump(o) => jump!(o),
-                    Op::JumpIfFalse(o) => {
+                    Op::Jump(_) => jump!(op.simm24()),
+                    Op::JumpIfFalse(_) => {
                         sp = sp.sub(1);
                         if (*sp).is_falsy() {
-                            jump!(o);
+                            jump!(op.simm24());
                         }
                     }
-                    Op::JumpIfTrue(o) => {
+                    Op::JumpIfTrue(_) => {
                         sp = sp.sub(1);
                         if (*sp).is_truthy() {
-                            jump!(o);
+                            jump!(op.simm24());
                         }
                     }
-                    Op::And(o) => {
+                    Op::And(_) => {
                         if top!().is_falsy() {
-                            jump!(o);
+                            jump!(op.simm24());
                         } else {
                             sp = sp.sub(1);
                         }
                     }
-                    Op::Or(o) => {
+                    Op::Or(_) => {
                         if top!().is_truthy() {
-                            jump!(o);
+                            jump!(op.simm24());
                         } else {
                             sp = sp.sub(1);
                         }
                     }
-                    Op::JNotEq(o) => jnot_stack!(Cmp::Eq, o, |a, b| a == b),
-                    Op::JNotNe(o) => jnot_stack!(Cmp::Ne, o, |a, b| a != b),
-                    Op::JNotLt(o) => jnot_stack!(Cmp::Lt, o, |a, b| a < b),
-                    Op::JNotLe(o) => jnot_stack!(Cmp::Le, o, |a, b| a <= b),
-                    Op::JNotGt(o) => jnot_stack!(Cmp::Gt, o, |a, b| a > b),
-                    Op::JNotGe(o) => jnot_stack!(Cmp::Ge, o, |a, b| a >= b),
-                    Op::JNotEqLL(a, b, o) => jnot_ll!(Cmp::Eq, a, b, o, |x, y| x == y),
-                    Op::JNotNeLL(a, b, o) => jnot_ll!(Cmp::Ne, a, b, o, |x, y| x != y),
-                    Op::JNotLtLL(a, b, o) => jnot_ll!(Cmp::Lt, a, b, o, |x, y| x < y),
-                    Op::JNotLeLL(a, b, o) => jnot_ll!(Cmp::Le, a, b, o, |x, y| x <= y),
-                    Op::JNotGtLL(a, b, o) => jnot_ll!(Cmp::Gt, a, b, o, |x, y| x > y),
-                    Op::JNotGeLL(a, b, o) => jnot_ll!(Cmp::Ge, a, b, o, |x, y| x >= y),
-                    Op::JNotEqLK(a, k, o) => jnot_lk!(Cmp::Eq, a, k, o, |x, y| x == y),
-                    Op::JNotNeLK(a, k, o) => jnot_lk!(Cmp::Ne, a, k, o, |x, y| x != y),
-                    Op::JNotLtLK(a, k, o) => jnot_lk!(Cmp::Lt, a, k, o, |x, y| x < y),
-                    Op::JNotLeLK(a, k, o) => jnot_lk!(Cmp::Le, a, k, o, |x, y| x <= y),
-                    Op::JNotGtLK(a, k, o) => jnot_lk!(Cmp::Gt, a, k, o, |x, y| x > y),
-                    Op::JNotGeLK(a, k, o) => jnot_lk!(Cmp::Ge, a, k, o, |x, y| x >= y),
+                    Op::JNotEq(_) => jnot_stack!(Cmp::Eq, op.simm24(), |a, b| a == b),
+                    Op::JNotNe(_) => jnot_stack!(Cmp::Ne, op.simm24(), |a, b| a != b),
+                    Op::JNotLt(_) => jnot_stack!(Cmp::Lt, op.simm24(), |a, b| a < b),
+                    Op::JNotLe(_) => jnot_stack!(Cmp::Le, op.simm24(), |a, b| a <= b),
+                    Op::JNotGt(_) => jnot_stack!(Cmp::Gt, op.simm24(), |a, b| a > b),
+                    Op::JNotGe(_) => jnot_stack!(Cmp::Ge, op.simm24(), |a, b| a >= b),
+                    Op::JNotEqLL(a, b) => jnot_ll!(Cmp::Eq, a, b, |x, y| x == y),
+                    Op::JNotNeLL(a, b) => jnot_ll!(Cmp::Ne, a, b, |x, y| x != y),
+                    Op::JNotLtLL(a, b) => jnot_ll!(Cmp::Lt, a, b, |x, y| x < y),
+                    Op::JNotLeLL(a, b) => jnot_ll!(Cmp::Le, a, b, |x, y| x <= y),
+                    Op::JNotGtLL(a, b) => jnot_ll!(Cmp::Gt, a, b, |x, y| x > y),
+                    Op::JNotGeLL(a, b) => jnot_ll!(Cmp::Ge, a, b, |x, y| x >= y),
+                    Op::JNotEqLK(a, k) => jnot_lk!(Cmp::Eq, a, k, |x, y| x == y),
+                    Op::JNotNeLK(a, k) => jnot_lk!(Cmp::Ne, a, k, |x, y| x != y),
+                    Op::JNotLtLK(a, k) => jnot_lk!(Cmp::Lt, a, k, |x, y| x < y),
+                    Op::JNotLeLK(a, k) => jnot_lk!(Cmp::Le, a, k, |x, y| x <= y),
+                    Op::JNotGtLK(a, k) => jnot_lk!(Cmp::Gt, a, k, |x, y| x > y),
+                    Op::JNotGeLK(a, k) => jnot_lk!(Cmp::Ge, a, k, |x, y| x >= y),
 
                     // ---- calls
                     Op::Call(argc) => call_generic!(argc as usize),
@@ -1626,8 +1642,8 @@ impl Vm {
                         let r = *base.add(s as usize);
                         do_return!(r);
                     }
-                    Op::Closure(k) => {
-                        let proto = (*consts.add(k as usize)).as_gc_unchecked::<Proto>();
+                    Op::Closure(_) => {
+                        let proto = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<Proto>();
                         let mut ups: Vec<Gc<Upvalue>> = Vec::with_capacity(proto.upvals.len());
                         for d in proto.upvals.iter() {
                             if d.is_local {
@@ -1662,10 +1678,10 @@ impl Vm {
                         }
                         self.heap.bytes += t.mem_size().saturating_sub(before);
                     }
-                    Op::InitField(k) => {
+                    Op::InitField(_) => {
                         let v = pop!();
                         let mut t = top!().as_gc_unchecked::<Table>();
-                        let key = *consts.add(k as usize);
+                        let key = *consts.add(op.imm24() as usize);
                         let before = t.mem_size();
                         let _ = t.set(key, v);
                         self.heap.bytes += t.mem_size().saturating_sub(before);
@@ -1683,19 +1699,19 @@ impl Vm {
                         }
                         self.heap.bytes += t.mem_size().saturating_sub(before);
                     }
-                    Op::GetField(k) => {
-                        let v = get_field!(top!(), k);
+                    Op::GetField(_) => {
+                        let v = get_field!(top!(), op.imm24() as usize);
                         *sp.sub(1) = v;
                     }
                     Op::GetLocalField(s, k) => {
-                        let v = get_field!(*base.add(s as usize), k);
+                        let v = get_field!(*base.add(s as usize), k as usize);
                         push!(v);
                     }
-                    Op::SetField(k) | Op::StoreField(k) => {
+                    Op::SetField(_) | Op::StoreField(_) => {
                         let store = matches!(op, Op::StoreField(_));
                         let v = peek!(0);
                         let obj = peek!(1);
-                        let key = (*consts.add(k as usize)).as_gc_unchecked::<Str>();
+                        let key = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<Str>();
                         let mut done = false;
                         if let Some(mut inst) = obj.as_gc::<Instance>() {
                             if let Some(i) = inst.ty.field_index(key) {
@@ -1754,17 +1770,17 @@ impl Vm {
                         }
                         gc_check!();
                     }
-                    Op::GetMethod(k) => {
+                    Op::GetMethod(_) => {
                         let obj = top!();
-                        let name = (*consts.add(k as usize)).as_gc_unchecked::<Str>();
+                        let name = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<Str>();
                         let f = protect!(self.get_method(obj, name));
                         *sp.sub(1) = f;
                         push!(obj);
                     }
 
                     // ---- structs
-                    Op::Struct(k) => {
-                        let tmpl = (*consts.add(k as usize)).as_gc_unchecked::<StructType>();
+                    Op::Struct(_) => {
+                        let tmpl = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<StructType>();
                         let ty = self.heap.alloc(StructType {
                             hdr: Header::new(Kind::StructType),
                             name: tmpl.name,
@@ -1775,12 +1791,12 @@ impl Vm {
                         push!(Value::from(ty));
                         gc_check!();
                     }
-                    Op::DefMethod(k) => {
+                    Op::DefMethod(_) => {
                         let target = peek!(1);
                         match target.as_gc::<StructType>() {
                             Some(mut ty) => {
                                 let f = pop!();
-                                let name = (*consts.add(k as usize)).as_gc_unchecked::<Str>();
+                                let name = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<Str>();
                                 ty.set_method(name, f);
                             }
                             None => throw!("`impl` target must be a struct, got {}", self.type_of(target)),
@@ -1788,7 +1804,8 @@ impl Vm {
                     }
 
                     // ---- loops
-                    Op::ForPrep(s, o) => {
+                    Op::ForPrep(s) => {
+                        let o = ext!();
                         let cur = *base.add(s as usize);
                         let end = *base.add(s as usize + 1);
                         if !cur.is_num() || !end.is_num() {
@@ -1800,7 +1817,8 @@ impl Vm {
                             jump!(o);
                         }
                     }
-                    Op::ForLoop(s, o) => {
+                    Op::ForLoop(s) => {
+                        let o = ext!();
                         let next = (*base.add(s as usize)).as_num() + 1.0;
                         if next < (*base.add(s as usize + 1)).as_num() {
                             let v = Value::num(next);
@@ -1809,7 +1827,8 @@ impl Vm {
                             jump!(o);
                         }
                     }
-                    Op::IterNext1(s, o) | Op::IterNext2(s, o) => {
+                    Op::IterNext1(s) | Op::IterNext2(s) => {
+                        let o = ext!();
                         let two = matches!(op, Op::IterNext2(..));
                         let coll = *base.add(s as usize);
                         let pos = (*base.add(s as usize + 1)).as_num() as usize;
@@ -1830,6 +1849,8 @@ impl Vm {
                             None => jump!(o),
                         }
                     }
+                    // the second word of a double instruction is consumed by its owner
+                    Op::Ext(_) => std::hint::unreachable_unchecked(),
                 }
             }
         }

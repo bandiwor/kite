@@ -1,21 +1,23 @@
 //! Peephole optimiser, run once per function after code generation.
 //!
-//! One left-to-right pass copies the code into an output buffer and, every
-//! time an instruction is appended, tries to fuse the *tail* of that buffer
-//! into a superinstruction (`Set+Pop -> Store`, compare+jump, `x += k`, ...).
-//! Because fusion looks at the output, chains compose in the same pass
-//! (`SetLocal;Pop` -> `StoreLocal`, then `GetLocal;AddK;StoreLocal` -> `AddLocalK`).
-//! The pass also
+//! One left-to-right pass copies the code into an output buffer of logical
+//! instructions (a double instruction with its `Ext` word is one entry) and, every
+//! time an instruction is appended, tries to fuse the *tail* of that buffer into a
+//! superinstruction (`Set+Pop -> Store`, compare+jump, `x += k`, ...).  Because
+//! fusion looks at the output, chains compose in the same pass (`SetLocal;Pop` ->
+//! `StoreLocal`, then `GetLocal;AddK;StoreLocal` -> `AddLocalK`).  The pass also
 //!  * threads jumps (a jump to an unconditional jump goes to its target; a
 //!    jump straight to a `Return` becomes that `Return`),
 //!  * drops code that follows `Jump`/`Return` and that nothing targets,
 //!  * drops `Jump(0)`.
 //!
-//! A window is only fused when none of its interior instructions is a jump
-//! target.  Branches are remapped afterwards through an old -> new index table.
-//! The scratch buffers are reused between functions.
+//! Fused ops need small operands (slots below 256, constants below 65536); when a
+//! window does not fit it is simply left alone.  A window is only fused when none of
+//! its interior instructions is a jump target.  Branches are remapped afterwards
+//! through an old -> new word index table, which is also where double instructions
+//! get their `Ext` word.  The scratch buffers are reused between functions.
 
-use crate::op::Op;
+use crate::op::{branch_target, Op, I24, U24};
 use crate::value::Value;
 
 /// An output instruction together with the bookkeeping needed to remap branches.
@@ -24,9 +26,9 @@ struct Entry {
     op: Op,
     /// Source offset of the instruction (for error positions).
     off: u32,
-    /// Old index of the first instruction this entry replaces.
+    /// Old word index of the first instruction this entry replaces.
     first: u32,
-    /// Old absolute branch target, if `op` branches.
+    /// Old word index of the branch target, if `op` branches.
     target: u32,
 }
 
@@ -35,10 +37,11 @@ pub struct Scratch {
     is_target: Vec<bool>,
     out: Vec<Entry>,
     map: Vec<u32>,
+    pos: Vec<u32>,
 }
 
 /// Convenience wrapper with throw-away buffers (tests, one-off use).
-pub fn optimize(code: Vec<Op>, offsets: Vec<u32>, consts: &[Value]) -> (Vec<Op>, Vec<u32>) {
+pub fn optimize(code: Vec<Op>, offsets: Vec<u32>, consts: &[Value]) -> Result<(Vec<Op>, Vec<u32>), String> {
     optimize_with(&mut Scratch::default(), code, offsets, consts)
 }
 
@@ -47,9 +50,9 @@ pub fn optimize_with(
     mut code: Vec<Op>,
     mut offsets: Vec<u32>,
     consts: &[Value],
-) -> (Vec<Op>, Vec<u32>) {
-    pass(sc, &mut code, &mut offsets, consts);
-    (code, offsets)
+) -> Result<(Vec<Op>, Vec<u32>), String> {
+    pass(sc, &mut code, &mut offsets, consts)?;
+    Ok((code, offsets))
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -74,7 +77,8 @@ fn as_cmp(op: Op) -> Option<Cmp> {
     })
 }
 
-fn jnot(c: Cmp, o: i32) -> Op {
+// the fused ops get their real offsets when the output is written back
+fn jnot(c: Cmp, o: I24) -> Op {
     match c {
         Cmp::Eq => Op::JNotEq(o),
         Cmp::Ne => Op::JNotNe(o),
@@ -85,34 +89,42 @@ fn jnot(c: Cmp, o: i32) -> Op {
     }
 }
 
-fn jnot_ll(c: Cmp, a: u16, b: u16, o: i16) -> Op {
+fn jnot_ll(c: Cmp, a: u8, b: u8) -> Op {
     match c {
-        Cmp::Eq => Op::JNotEqLL(a, b, o),
-        Cmp::Ne => Op::JNotNeLL(a, b, o),
-        Cmp::Lt => Op::JNotLtLL(a, b, o),
-        Cmp::Le => Op::JNotLeLL(a, b, o),
-        Cmp::Gt => Op::JNotGtLL(a, b, o),
-        Cmp::Ge => Op::JNotGeLL(a, b, o),
+        Cmp::Eq => Op::JNotEqLL(a, b),
+        Cmp::Ne => Op::JNotNeLL(a, b),
+        Cmp::Lt => Op::JNotLtLL(a, b),
+        Cmp::Le => Op::JNotLeLL(a, b),
+        Cmp::Gt => Op::JNotGtLL(a, b),
+        Cmp::Ge => Op::JNotGeLL(a, b),
     }
 }
 
-fn jnot_lk(c: Cmp, a: u16, k: u16, o: i16) -> Op {
+fn jnot_lk(c: Cmp, a: u8, k: u16) -> Op {
     match c {
-        Cmp::Eq => Op::JNotEqLK(a, k, o),
-        Cmp::Ne => Op::JNotNeLK(a, k, o),
-        Cmp::Lt => Op::JNotLtLK(a, k, o),
-        Cmp::Le => Op::JNotLeLK(a, k, o),
-        Cmp::Gt => Op::JNotGtLK(a, k, o),
-        Cmp::Ge => Op::JNotGeLK(a, k, o),
+        Cmp::Eq => Op::JNotEqLK(a, k),
+        Cmp::Ne => Op::JNotNeLK(a, k),
+        Cmp::Lt => Op::JNotLtLK(a, k),
+        Cmp::Le => Op::JNotLeLK(a, k),
+        Cmp::Gt => Op::JNotGtLK(a, k),
+        Cmp::Ge => Op::JNotGeLK(a, k),
     }
 }
 
-fn is_num_const(consts: &[Value], k: u32) -> bool {
-    consts.get(k as usize).is_some_and(|v| v.is_num())
+fn is_num_const(consts: &[Value], k: U24) -> bool {
+    consts.get(k.get() as usize).is_some_and(|v| v.is_num())
 }
 
 fn is_pure_push(op: Op) -> bool {
     matches!(op, Op::Nil | Op::True | Op::False | Op::Const(_) | Op::GetLocal(_) | Op::GetUpval(_))
+}
+
+fn small_slot(s: u16) -> Option<u8> {
+    u8::try_from(s).ok()
+}
+
+fn small_const(k: U24) -> Option<u16> {
+    u16::try_from(k.get()).ok()
 }
 
 /// Cheap pre-filter: only these ops can be the last op of a fusable window.
@@ -146,30 +158,34 @@ enum Rewrite {
     Nothing,
 }
 
-/// Try to rewrite the tail `t` of the output buffer (`t.len() >= 2`).  Returns
-/// the rewrite and how many trailing ops it consumed.  `ok(width)` says whether
-/// a window of that many ops may be fused (no jump target inside it).
+/// Try to rewrite the tail of the output buffer.  Returns the rewrite and how many
+/// trailing entries it consumed.  `ok(width)` says whether a window of that many
+/// entries may be fused (no jump target inside it).
 fn match_tail(entries: &[Entry], consts: &[Value], ok: &dyn Fn(usize) -> bool) -> Option<(Rewrite, usize)> {
     use Op::*;
     let n = entries.len();
     let t = |k: usize| entries[n - k].op;
     // ---- 4 wide: local OP constant, then branch
     if n >= 4 && ok(4) {
-        if let [GetLocal(a), Const(k), c, JumpIfFalse(o)] = [t(4), t(3), t(2), t(1)] {
-            if let (Some(c), Ok(o16), Ok(k16)) = (as_cmp(c), i16::try_from(o), u16::try_from(k)) {
-                return Some((Rewrite::One(jnot_lk(c, a, k16, o16)), 4));
+        if let [GetLocal(a), Const(k), c, JumpIfFalse(_)] = [t(4), t(3), t(2), t(1)] {
+            if let (Some(c), Some(a), Some(k)) = (as_cmp(c), small_slot(a), small_const(k)) {
+                return Some((Rewrite::One(jnot_lk(c, a, k)), 4));
             }
         }
     }
     // ---- 3 wide
     if n >= 3 && ok(3) {
         match [t(3), t(2), t(1)] {
-            [GetLocal2(a, b), c, JumpIfFalse(o)] => {
-                if let (Some(c), Ok(o16)) = (as_cmp(c), i16::try_from(o)) {
-                    return Some((Rewrite::One(jnot_ll(c, a, b, o16)), 3));
+            [GetLocal2(a, b), c, JumpIfFalse(_)] => {
+                if let Some(c) = as_cmp(c) {
+                    return Some((Rewrite::One(jnot_ll(c, a, b)), 3));
                 }
             }
-            [GetLocal(s), AddK(k), StoreLocal(d)] if s == d => return Some((Rewrite::One(AddLocalK(s, k)), 3)),
+            [GetLocal(s), AddK(k), StoreLocal(d)] if s == d => {
+                if let (Some(s), Some(k)) = (small_slot(s), small_const(k)) {
+                    return Some((Rewrite::One(AddLocalK(s, k)), 3));
+                }
+            }
             _ => {}
         }
     }
@@ -186,13 +202,15 @@ fn match_tail(entries: &[Entry], consts: &[Value], ok: &dyn Fn(usize) -> bool) -
         (SetIndex, Pop) => StoreIndex,
         (Nil, Return) => ReturnNil,
         (GetLocal(s), Return) => ReturnLocal(s),
-        (GetLocal(s), GetField(k)) => GetLocalField(s, k),
+        (GetLocal(s), GetField(k)) => GetLocalField(small_slot(s)?, small_const(k)?),
         // `a; b; .field` : the field read wants `b` on its own
-        (GetLocal2(x, y), GetField(k)) => return Some((Rewrite::Two(GetLocal(x), GetLocalField(y, k)), 2)),
+        (GetLocal2(x, y), GetField(k)) => {
+            return Some((Rewrite::Two(GetLocal(x as u16), GetLocalField(y, small_const(k)?)), 2));
+        }
         (GetLocal2(x, y), Add) => AddLL(x, y),
         (GetLocal2(x, y), Sub) => SubLL(x, y),
         (GetLocal2(x, y), Mul) => MulLL(x, y),
-        (GetLocal(x), GetLocal(y)) => GetLocal2(x, y),
+        (GetLocal(x), GetLocal(y)) => GetLocal2(small_slot(x)?, small_slot(y)?),
         (Pop, Pop) => PopN(2),
         (PopN(n), Pop) | (Pop, PopN(n)) if n < u16::MAX => PopN(n + 1),
         (Not, JumpIfFalse(o)) => JumpIfTrue(o),
@@ -209,42 +227,50 @@ fn match_tail(entries: &[Entry], consts: &[Value], ok: &dyn Fn(usize) -> bool) -
     Some((Rewrite::One(r), 2))
 }
 
-/// Resolve a branch's final destination through chains of unconditional jumps.
-fn thread(code: &mut [Op], i: usize) {
-    let Some(off) = code[i].jump_offset() else { return };
-    let mut t = (i as i64 + 1 + off as i64) as usize;
+/// Resolve the destination of the branch at `i` through chains of unconditional jumps.
+/// Returns the final target, or `None` when the instruction was replaced by a return.
+fn thread(code: &mut [Op], i: usize) -> Option<usize> {
+    let n = code.len();
+    let t0 = branch_target(code, i)?;
+    let mut t = t0;
     let mut hops = 0;
-    while t < code.len() && hops < 8 {
+    while t < n && hops < 8 {
         match code[t] {
             Op::Jump(o) => {
-                t = (t as i64 + 1 + o as i64) as usize;
+                t = (t as i64 + 1 + o.get() as i64) as usize;
                 hops += 1;
             }
             _ => break,
-        }
-    }
-    if hops > 0 {
-        let rel = t as i64 - (i as i64 + 1);
-        if let Some(op) = code[i].with_jump_offset(rel as i32) {
-            code[i] = op;
         }
     }
     // an unconditional jump straight to a return is just that return
     if let (Op::Jump(_), Some(&r)) = (code[i], code.get(t)) {
         if matches!(r, Op::Return | Op::ReturnNil | Op::ReturnLocal(_)) {
             code[i] = r;
+            return None;
         }
     }
+    if t != t0 {
+        let wide = code[i].is_wide();
+        let rel = t as i64 - (i as i64 + 1 + wide as i64);
+        match I24::new(rel as i32) {
+            Some(o) if wide => code[i + 1] = Op::Ext(o),
+            Some(o) => code[i] = code[i].with_jump_offset(o.get()).unwrap(),
+            None => t = t0, // does not fit; keep the original destination
+        }
+    }
+    Some(t)
 }
 
 /// The whole optimisation: threading, target marking, and one fusing sweep.
-fn pass(sc: &mut Scratch, code: &mut Vec<Op>, offsets: &mut Vec<u32>, consts: &[Value]) {
+fn pass(sc: &mut Scratch, code: &mut Vec<Op>, offsets: &mut Vec<u32>, consts: &[Value]) -> Result<(), String> {
     let n = code.len();
-    let Scratch { is_target, out, map } = sc;
+    let Scratch { is_target, out, map, pos } = sc;
     is_target.clear();
     is_target.resize(n + 1, false);
 
-    for i in 0..n {
+    let mut i = 0;
+    while i < n {
         // `Call; Return` becomes `TailCall; Return`.  The Return stays: it is what
         // runs when the callee is a native (or anything that is not a plain closure).
         if let Op::Call(argc) = code[i] {
@@ -252,13 +278,12 @@ fn pass(sc: &mut Scratch, code: &mut Vec<Op>, offsets: &mut Vec<u32>, consts: &[
                 code[i] = Op::TailCall(argc);
             }
         }
-        thread(code, i);
-        if let Some(off) = code[i].jump_offset() {
-            let t = (i as i64 + 1 + off as i64) as usize;
+        if let Some(t) = thread(code, i) {
             if t <= n {
                 is_target[t] = true;
             }
         }
+        i += code[i].width();
     }
 
     out.clear();
@@ -266,17 +291,21 @@ fn pass(sc: &mut Scratch, code: &mut Vec<Op>, offsets: &mut Vec<u32>, consts: &[
     map.resize(n + 1, 0);
 
     let mut dead = false;
-    for i in 0..n {
+    let mut i = 0;
+    while i < n {
+        let op = code[i];
+        let w = op.width();
+        let end = i + w - 1;
         if is_target[i] {
             dead = false;
         }
-        if dead || code[i] == Op::Jump(0) {
-            map[i] = out.len() as u32;
+        if dead || matches!(op, Op::Jump(o) if o.get() == 0) {
+            map[i..=end].fill(out.len() as u32);
+            i += w;
             continue;
         }
-        let op = code[i];
-        map[i] = out.len() as u32;
-        let target = op.jump_offset().map_or(0, |o| (i as i64 + 1 + o as i64) as u32);
+        map[i..=end].fill(out.len() as u32);
+        let target = branch_target(code, i).map_or(0, |t| t as u32);
         out.push(Entry { op, off: offsets[i], first: i as u32, target });
 
         // fuse the tail as long as something matches
@@ -286,7 +315,7 @@ fn pass(sc: &mut Scratch, code: &mut Vec<Op>, offsets: &mut Vec<u32>, consts: &[
             // than its first) is a jump target - including removed `Jump(0)`s
             let ok = |width: usize| {
                 let lo = out[out.len() - width].first as usize + 1;
-                !(lo..=i).any(|o| is_target[o])
+                !(lo..=end).any(|o| is_target[o])
             };
             let Some((rw, width)) = match_tail(out, consts, &ok) else { break };
             let start = out.len() - width;
@@ -303,7 +332,7 @@ fn pass(sc: &mut Scratch, code: &mut Vec<Op>, offsets: &mut Vec<u32>, consts: &[
             }
             // old indices that pointed into the window now point at its replacement
             // (or, if it vanished, at whatever is emitted next, which is also `start`)
-            map[first_old as usize..=i].fill(start as u32);
+            map[first_old as usize..=end].fill(start as u32);
             if let Rewrite::Two(..) = rw {
                 map[carrier.first as usize] = (start + 1) as u32;
             }
@@ -316,31 +345,67 @@ fn pass(sc: &mut Scratch, code: &mut Vec<Op>, offsets: &mut Vec<u32>, consts: &[
         if !vanished && out.last().is_some_and(|e| e.op.is_terminator()) {
             dead = true;
         }
+        i += w;
     }
     map[n] = out.len() as u32;
+
+    // word positions of the output entries
+    pos.clear();
+    let mut words = 0u32;
+    for e in out.iter() {
+        pos.push(words);
+        words += e.op.width() as u32;
+    }
+    let word_of = |entry: u32| -> i64 {
+        if entry as usize >= pos.len() {
+            words as i64
+        } else {
+            pos[entry as usize] as i64
+        }
+    };
 
     // remap branches and write back
     code.clear();
     offsets.clear();
+    let too_large = || "function is too large (a jump spans more than 8M instructions)".to_string();
     for (j, e) in out.iter().enumerate() {
-        let mut op = e.op;
-        if op.jump_offset().is_some() {
-            let new_target = map[(e.target as usize).min(n)] as i64;
-            let rel = new_target - (j as i64 + 1);
-            op = op.with_jump_offset(rel as i32).expect("peephole: jump out of range");
+        let here = pos[j] as i64;
+        if e.op.is_wide() {
+            let new_target = word_of(map[(e.target as usize).min(n)]);
+            let rel = new_target - (here + 2);
+            let o = i32::try_from(rel).ok().and_then(I24::new).ok_or_else(too_large)?;
+            code.push(e.op);
+            code.push(Op::Ext(o));
+            offsets.push(e.off);
+            offsets.push(e.off);
+        } else if e.op.jump_offset().is_some() {
+            let new_target = word_of(map[(e.target as usize).min(n)]);
+            let rel = new_target - (here + 1);
+            let op = i32::try_from(rel).ok().and_then(|r| e.op.with_jump_offset(r)).ok_or_else(too_large)?;
+            code.push(op);
+            offsets.push(e.off);
+        } else {
+            code.push(e.op);
+            offsets.push(e.off);
         }
-        code.push(op);
-        offsets.push(e.off);
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn o(v: i32) -> I24 {
+        I24::new(v).unwrap()
+    }
+    fn k(v: u32) -> U24 {
+        U24::new(v).unwrap()
+    }
+
     fn opt(code: Vec<Op>) -> Vec<Op> {
         let n = code.len();
-        optimize(code, vec![0; n], &[Value::num(1.0)]).0
+        optimize(code, vec![0; n], &[Value::num(1.0)]).unwrap().0
     }
 
     #[test]
@@ -351,55 +416,98 @@ mod tests {
     #[test]
     fn dead_code_and_threading() {
         // 0: Jump -> 2 ; 1: dead ; 2: Jump -> 4 ; 3: dead ; 4: Return
-        let code = vec![Op::Jump(1), Op::Nil, Op::Jump(1), Op::True, Op::Return];
+        let code = vec![Op::Jump(o(1)), Op::Nil, Op::Jump(o(1)), Op::True, Op::Return];
         assert_eq!(opt(code), vec![Op::Return]);
     }
 
     #[test]
-    fn compare_jump() {
-        let code =
-            vec![Op::GetLocal(0), Op::GetLocal(1), Op::Lt, Op::JumpIfFalse(2), Op::Nil, Op::Pop, Op::Nil, Op::Return];
+    fn compare_jump_becomes_a_double_instruction() {
+        let code = vec![
+            Op::GetLocal(0),
+            Op::GetLocal(1),
+            Op::Lt,
+            Op::JumpIfFalse(o(2)),
+            Op::Nil,
+            Op::Pop,
+            Op::Nil,
+            Op::Return,
+        ];
         let out = opt(code);
-        assert_eq!(out[0], Op::JNotLtLL(0, 1, 0));
+        assert_eq!(out[0], Op::JNotLtLL(0, 1));
+        assert!(matches!(out[1], Op::Ext(_)));
+        assert_eq!(out[1].ext(), 0); // falls through to the (fused) tail
+    }
+
+    #[test]
+    fn loop_with_double_instruction_is_remapped() {
+        // 0..3: i < K ; 4: GetLocal;Pop (vanishes) ; 6: back jump ; 7: exit
+        let code = vec![
+            Op::GetLocal(0),
+            Op::Const(k(0)),
+            Op::Lt,
+            Op::JumpIfFalse(o(3)),
+            Op::GetLocal(0),
+            Op::Pop,
+            Op::Jump(o(-7)),
+            Op::Nil,
+            Op::Return,
+        ];
+        let out = opt(code);
+        assert_eq!(out, vec![Op::JNotLtLK(0, 0), Op::Ext(o(1)), Op::Jump(o(-3)), Op::ReturnNil]);
     }
 
     #[test]
     fn increment_chain_in_one_pass() {
-        let code = vec![Op::GetLocal(2), Op::Const(0), Op::Add, Op::SetLocal(2), Op::Pop, Op::Nil, Op::Return];
+        let code = vec![Op::GetLocal(2), Op::Const(k(0)), Op::Add, Op::SetLocal(2), Op::Pop, Op::Nil, Op::Return];
         assert_eq!(opt(code), vec![Op::AddLocalK(2, 0), Op::ReturnNil]);
     }
 
     #[test]
     fn field_read_prefers_second_local() {
-        let code = vec![Op::GetLocal(0), Op::GetLocal(1), Op::GetField(3), Op::Return];
+        let code = vec![Op::GetLocal(0), Op::GetLocal(1), Op::GetField(k(3)), Op::Return];
         assert_eq!(opt(code), vec![Op::GetLocal(0), Op::GetLocalField(1, 3), Op::Return]);
+    }
+
+    #[test]
+    fn large_operands_are_not_fused() {
+        // slot 300 does not fit the 8-bit operand of the fused forms
+        let code = vec![Op::GetLocal(300), Op::GetLocal(1), Op::Add, Op::Return];
+        assert_eq!(opt(code.clone()), code);
+        let code = vec![Op::GetLocal(300), Op::AddK(k(0)), Op::StoreLocal(300), Op::Nil, Op::Return];
+        assert_eq!(opt(code), vec![Op::GetLocal(300), Op::AddK(k(0)), Op::StoreLocal(300), Op::ReturnNil]);
+        // constant 70000 does not fit 16 bits
+        let code = vec![Op::GetLocal(1), Op::Const(k(70_000)), Op::Lt, Op::JumpIfFalse(o(0)), Op::Nil, Op::Return];
+        let out = opt(code);
+        assert!(!out.iter().any(|op| op.is_wide()), "{:?}", out);
     }
 
     #[test]
     fn keeps_jump_targets_intact() {
         // the Pop is a jump target, so SetLocal+Pop must not fuse across it
-        let code = vec![Op::True, Op::JumpIfTrue(1), Op::SetLocal(0), Op::Pop, Op::Nil, Op::Return];
+        let code = vec![Op::True, Op::JumpIfTrue(o(1)), Op::SetLocal(0), Op::Pop, Op::Nil, Op::Return];
         let out = opt(code);
         assert!(out.contains(&Op::SetLocal(0)) && out.contains(&Op::Pop));
     }
 
     #[test]
-    fn jump_into_a_fused_window_start_is_remapped() {
-        // loop: 0: GetLocal0 1: Const 2: Lt 3: JumpIfFalse(+3) 4: GetLocal 5: Pop 6: Jump(-7) 7: Nil 8: Return
+    fn jump_over_a_double_instruction() {
+        // a forward jump that skips a double instruction must count both words
         let code = vec![
+            Op::True,
+            Op::JumpIfFalse(o(4)), // -> index 6 (Nil)
             Op::GetLocal(0),
-            Op::Const(0),
+            Op::GetLocal(1),
             Op::Lt,
-            Op::JumpIfFalse(3),
-            Op::GetLocal(0),
-            Op::Pop,
-            Op::Jump(-7),
+            Op::JumpIfFalse(o(0)),
             Op::Nil,
             Op::Return,
         ];
         let out = opt(code);
-        // the back jump must land on the fused compare at index 0
-        assert_eq!(out[0], Op::JNotLtLK(0, 0, 1));
-        assert_eq!(out[1], Op::Jump(-2));
+        // True, JumpIfFalse, JNotLtLL, Ext, ...
+        let jf = out.iter().position(|op| matches!(op, Op::JumpIfFalse(_))).unwrap();
+        let wide = out.iter().position(|op| op.is_wide()).unwrap();
+        assert!(wide > jf);
+        let target = jf as i32 + 1 + out[jf].jump_offset().unwrap();
+        assert!(target as usize >= wide + 2, "jump must land after the double instruction");
     }
 }

@@ -16,7 +16,7 @@ use crate::hash::FxHashMap;
 use crate::heap::Heap;
 use crate::intern::{Interner, Sym};
 use crate::object::*;
-use crate::op::Op;
+use crate::op::{Op, I24, U24};
 use crate::peephole;
 use crate::source::{Diag, SourceFile};
 use crate::text::unescape;
@@ -156,11 +156,44 @@ impl<'a> Compiler<'a> {
         self.emit(op)
     }
 
-    fn patch_to(&mut self, at: usize, target: usize) {
-        let rel = target as i64 - (at as i64 + 1);
+    /// Emit a double instruction: the op plus the `Ext` word that will hold its
+    /// branch offset (patched later with `patch_to`).  Returns the op's index.
+    fn emit_wide(&mut self, op: Op) -> usize {
+        debug_assert!(op.is_wide());
+        let at = self.emit(op);
+        let cur = self.cur;
         let fb = self.fb();
-        let op = fb.code[at];
-        fb.code[at] = op.with_jump_offset(rel as i32).expect("jump patch");
+        fb.code.push(Op::Ext(I24::ZERO));
+        fb.offsets.push(cur);
+        at
+    }
+
+    /// Point the branch at `at` to the instruction index `target`.
+    fn patch_to(&mut self, at: usize, target: usize) {
+        let wide = self.fb().code[at].is_wide();
+        let rel = target as i64 - (at as i64 + 1 + wide as i64);
+        let off = I24::new(rel as i32).filter(|_| i32::try_from(rel).is_ok());
+        let Some(off) = off else {
+            self.error(self.cur, "function is too large (a jump spans more than 8M instructions)");
+            return;
+        };
+        let fb = self.fb();
+        if wide {
+            fb.code[at + 1] = Op::Ext(off);
+        } else {
+            let op = fb.code[at];
+            fb.code[at] = op.with_jump_offset(off.get()).expect("jump patch");
+        }
+    }
+
+    fn u24(&mut self, v: u32) -> U24 {
+        match U24::new(v) {
+            Some(x) => x,
+            None => {
+                self.error(self.cur, "too many constants or globals (limit is 16M)");
+                U24::ZERO
+            }
+        }
     }
 
     fn patch_here(&mut self, at: usize) {
@@ -169,7 +202,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_loop_back(&mut self, target: usize) {
-        let at = self.emit(Op::Jump(0));
+        let at = self.emit(Op::Jump(I24::ZERO));
         self.patch_to(at, target);
     }
 
@@ -177,27 +210,27 @@ impl<'a> Compiler<'a> {
         self.fb().depth = d;
     }
 
-    fn add_const(&mut self, v: Value) -> u32 {
+    fn add_const(&mut self, v: Value) -> U24 {
         let fb = self.fb();
         if let Some(&i) = fb.const_map.get(&v.bits()) {
-            return i;
+            return U24::new(i).unwrap();
         }
         let i = fb.consts.len() as u32;
         fb.consts.push(v);
         fb.const_map.insert(v.bits(), i);
-        i
+        self.u24(i)
     }
 
-    fn num_const(&mut self, n: f64) -> u32 {
+    fn num_const(&mut self, n: f64) -> U24 {
         self.add_const(Value::num(n))
     }
 
-    fn str_const(&mut self, s: &str) -> u32 {
+    fn str_const(&mut self, s: &str) -> U24 {
         let g = self.heap.intern(s);
         self.add_const(Value::from(g))
     }
 
-    fn sym_const(&mut self, s: Sym) -> u32 {
+    fn sym_const(&mut self, s: Sym) -> U24 {
         let g = match self.sym_strs[s.idx()] {
             Some(g) => g,
             None => {
@@ -273,11 +306,18 @@ impl<'a> Compiler<'a> {
     fn finish(&mut self, fb: FnBuilder, name: Rc<str>, arity: u8, info: &FuncInfo) -> Gc<Proto> {
         let FnBuilder { code, offsets, consts, max_depth, .. } = fb;
         let (code, offsets) = if self.opts.optimize {
-            peephole::optimize_with(&mut self.scratch, code, offsets, &consts)
+            match peephole::optimize_with(&mut self.scratch, code.clone(), offsets.clone(), &consts) {
+                Ok(r) => r,
+                Err(msg) => {
+                    self.error(self.cur, msg);
+                    (code, offsets)
+                }
+            }
         } else {
             (code, offsets)
         };
         debug_assert_eq!(code.len(), offsets.len());
+        debug_assert!(crate::op::verify(&code).is_ok(), "{:?} in `{}`", crate::op::verify(&code), name);
         let proto = Proto {
             hdr: Header::new(Kind::Proto),
             name,
@@ -301,7 +341,8 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::StoreLocal(s));
             }
             Res::Global => {
-                self.emit(Op::DefGlobal(name.0));
+                let g = self.u24(name.0);
+                self.emit(Op::DefGlobal(g));
             }
             _ => unreachable!("declaration resolved to {:?}", res),
         }
@@ -383,7 +424,7 @@ impl<'a> Compiler<'a> {
             _ => {
                 self.expr(id);
                 self.at(id);
-                vec![self.emit_jump(Op::JumpIfFalse(0))]
+                vec![self.emit_jump(Op::JumpIfFalse(I24::ZERO))]
             }
         }
     }
@@ -408,7 +449,7 @@ impl<'a> Compiler<'a> {
             _ => {
                 self.expr(id);
                 self.at(id);
-                vec![self.emit_jump(Op::JumpIfTrue(0))]
+                vec![self.emit_jump(Op::JumpIfTrue(I24::ZERO))]
             }
         }
     }
@@ -419,7 +460,10 @@ impl<'a> Compiler<'a> {
         match res {
             Res::Local(s) => self.emit(Op::GetLocal(s)),
             Res::Upvalue(i) => self.emit(Op::GetUpval(i)),
-            Res::Global => self.emit(Op::GetGlobal(sym.0)),
+            Res::Global => {
+                let g = self.u24(sym.0);
+                self.emit(Op::GetGlobal(g))
+            }
             Res::None => unreachable!("unresolved identifier"),
         };
     }
@@ -428,7 +472,10 @@ impl<'a> Compiler<'a> {
         match res {
             Res::Local(s) => self.emit(Op::SetLocal(s)),
             Res::Upvalue(i) => self.emit(Op::SetUpval(i)),
-            Res::Global => self.emit(Op::SetGlobal(sym.0)),
+            Res::Global => {
+                let g = self.u24(sym.0);
+                self.emit(Op::SetGlobal(g))
+            }
             Res::None => unreachable!("unresolved identifier"),
         };
     }
@@ -507,14 +554,14 @@ impl<'a> Compiler<'a> {
             Node::Binary { op: BinOp::And, lhs, rhs } => {
                 self.expr(lhs);
                 self.at(id);
-                let j = self.emit_jump(Op::And(0));
+                let j = self.emit_jump(Op::And(I24::ZERO));
                 self.expr(rhs);
                 self.patch_here(j);
             }
             Node::Binary { op: BinOp::Or, lhs, rhs } => {
                 self.expr(lhs);
                 self.at(id);
-                let j = self.emit_jump(Op::Or(0));
+                let j = self.emit_jump(Op::Or(I24::ZERO));
                 self.expr(rhs);
                 self.patch_here(j);
             }
@@ -613,7 +660,7 @@ impl<'a> Compiler<'a> {
                 let d = self.fb().depth;
                 let jf = self.cond_false(cond);
                 self.expr(then);
-                let jend = self.emit_jump(Op::Jump(0));
+                let jend = self.emit_jump(Op::Jump(I24::ZERO));
                 for j in jf {
                     self.patch_here(j);
                 }
@@ -802,7 +849,7 @@ impl<'a> Compiler<'a> {
             self.expr(end);
             self.emit(Op::StoreLocal(base + 1));
             self.at(id);
-            exit = self.emit_jump(Op::ForPrep(base, 0));
+            exit = self.emit_wide(Op::ForPrep(base));
             body_start = self.here();
             loop_target = body_start;
             cont_target_is_start = false;
@@ -815,7 +862,7 @@ impl<'a> Compiler<'a> {
             self.emit(Op::StoreLocal(base + 1));
             self.at(id);
             body_start = self.here();
-            exit = self.emit_jump(if nvars == 1 { Op::IterNext1(base, 0) } else { Op::IterNext2(base, 0) });
+            exit = self.emit_wide(if nvars == 1 { Op::IterNext1(base) } else { Op::IterNext2(base) });
             loop_target = body_start;
             cont_target_is_start = true;
         }
@@ -826,7 +873,7 @@ impl<'a> Compiler<'a> {
         let cont_label = self.here();
         self.at(id);
         if end.is_some() {
-            let at = self.emit(Op::ForLoop(base, 0));
+            let at = self.emit_wide(Op::ForLoop(base));
             // loop back to the first instruction of the body
             self.patch_to(at, body_start);
         } else {
@@ -868,7 +915,7 @@ impl<'a> Compiler<'a> {
             self.emit(Op::CloseUpvals(m));
         }
         self.at(id);
-        let j = self.emit_jump(Op::Jump(0));
+        let j = self.emit_jump(Op::Jump(I24::ZERO));
         let l = self.fb().loops.last_mut().unwrap();
         if is_break {
             l.breaks.push(j);
