@@ -1,0 +1,24 @@
+// assignment is a statement: allowed as an expression statement, a lambda body and a block tail
+var a = 1; var b = 2;
+a = b;
+a += 5; a -= 1; a *= 2; a /= 4; a %= 2;
+print(a);   // expect: 1
+var total = 0;
+const add = |v| => total += v;
+each([1, 2, 3], add);
+print(total);   // expect: 6
+each([4, 5], |v| => total = total + v);
+print(total);   // expect: 15
+fn bump() { total += 1 }
+print(bump());   // expect: 16
+if true { a = 10 } else { a = 20 }
+print(a);   // expect: 10
+const t = {};
+t.x = 1; t["y"] = 2; t.x += t.y;
+print(t.x);   // expect: 3
+for i in 0..2 { a += i }
+print(a);   // expect: 11
+const blk = do { var z = 1; z = z + 1; z };
+print(blk);   // expect: 2
+// comparing and assigning are different operators
+print(a == 11, a != 11);   // expect: true false

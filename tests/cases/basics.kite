@@ -18,7 +18,7 @@ print(nil && 1, nil || 2, 0 && 3, "" || 4);  // expect: nil 2 3
 print(1 < 2, 2 <= 2, 3 > 4, 3 >= 3, 1 == 1, 1 != 1);  // expect: true true false true true false
 print("abc" < "abd", "b" > "a", "a" == "a");  // expect: true true true
 var a = 1; var b = 2;
-a = b = 7;
+a = 7; b = a;
 print(a, b);   // expect: 7 7
 x = 5; x -= 2; x *= 4; x /= 3; x %= 3; x **= 2;
 print(x);      // expect: 1

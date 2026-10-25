@@ -1,0 +1,3 @@
+// error: assignment is a statement
+var a = 1;
+fn f() { return a = 2; }

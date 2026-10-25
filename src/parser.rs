@@ -482,7 +482,7 @@ impl<'a> Parser<'a> {
                 };
                 // `{1} + {2};` : a plain block (or `do { }`) followed by an operator is an operand
                 let e = if was_plain_block && continues_after_block(self.kind()) {
-                    self.parse_infix(e, 0)?
+                    self.parse_infix(e, 0, true)?
                 } else {
                     e
                 };
@@ -499,7 +499,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr_stmt(&mut self, top: bool) -> PResult<StmtResult> {
-        let e = self.parse_expr()?;
+        let e = self.parse_expr_assign()?;
         if self.eat(T::Semi) {
             return Ok(StmtResult::Stmt(e));
         }
@@ -606,12 +606,12 @@ impl<'a> Parser<'a> {
             if self.kind() == T::LBrace && !self.brace_is_table(Brace::Lambda) {
                 let b = self.parse_block()?;
                 if continues_after_block(self.kind()) {
-                    self.parse_infix(b, 0)?
+                    self.parse_infix(b, 0, true)?
                 } else {
                     b
                 }
             } else {
-                self.parse_expr()?
+                self.parse_expr_assign()?
             }
         } else if self.kind() == T::LBrace {
             self.parse_expr()?
@@ -674,16 +674,28 @@ impl<'a> Parser<'a> {
         self.parse_bp(0)
     }
 
+    /// A value expression: assignment is *not* allowed anywhere inside.
     fn parse_bp(&mut self, min_bp: u8) -> PResult<NodeId> {
         self.enter()?;
         let lhs = self.parse_prefix()?;
-        let r = self.parse_infix(lhs, min_bp);
+        let r = self.parse_infix(lhs, min_bp, false);
+        self.leave();
+        r
+    }
+
+    /// An expression that may be a single top-level assignment (`a = b`, `a += b`):
+    /// expression statements, `=>` lambda bodies and block tails.  Assignment is
+    /// deliberately not a general expression: `a = b = c` and `while a = b {}` are errors.
+    fn parse_expr_assign(&mut self) -> PResult<NodeId> {
+        self.enter()?;
+        let lhs = self.parse_prefix()?;
+        let r = self.parse_infix(lhs, 0, true);
         self.leave();
         r
     }
 
     /// Continue an expression whose first operand `lhs` has already been parsed.
-    fn parse_infix(&mut self, mut lhs: NodeId, min_bp: u8) -> PResult<NodeId> {
+    fn parse_infix(&mut self, mut lhs: NodeId, min_bp: u8, assign_ok: bool) -> PResult<NodeId> {
         loop {
             let tok = self.tok();
             let k = tok.kind();
@@ -727,6 +739,15 @@ impl<'a> Parser<'a> {
                 _ if is_assign(k) => {
                     if !matches!(self.ast.node(lhs), Node::Ident(_) | Node::Field { .. } | Node::Index { .. }) {
                         self.error_at(tok, "invalid assignment target".to_string());
+                        return Err(());
+                    }
+                    if !assign_ok {
+                        self.error_at(
+                            tok,
+                            "assignment is a statement, not a value: it cannot be chained (`a = b = c`) \
+                             or used in a condition or operand (did you mean `==`?)"
+                                .to_string(),
+                        );
                         return Err(());
                     }
                     self.pos += 1;
