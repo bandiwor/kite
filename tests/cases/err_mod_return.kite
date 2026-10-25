@@ -1,0 +1,2 @@
+// error: not allowed at the top level of a module
+import "mods/top_return";

@@ -1,0 +1,2 @@
+import "mods/script_style";   // expect: hi
+print(script_style.hello());   // expect: hi

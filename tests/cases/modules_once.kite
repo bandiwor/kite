@@ -1,0 +1,7 @@
+// each module runs exactly once, however it is reached
+import "mods/counter";   // expect: loading counter
+import "mods/uses_counter" as uc;
+print(counter.next(), counter.next());   // expect: 1 2
+print(uc.bump());   // expect: 3
+import { next } from "mods/counter";
+print(next());   // expect: 4

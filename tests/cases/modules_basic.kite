@@ -1,0 +1,22 @@
+import "mods/math_util";
+print(math_util.square(5), math_util.PI);   // expect: 25 3.14159
+print(math_util.even(10), math_util.even(7));   // expect: true false
+print(math_util.count());   // expect: 1
+
+// named imports and aliases
+import { square, PI, Point } from "mods/math_util";
+import "mods/math_util" as mu;
+print(square(3), PI);   // expect: 9 3.14159
+print(mu.count());   // expect: 2
+
+// the same module is shared: one table, one set of private state
+print(mu == math_util, mu.square == square);   // expect: true true
+
+// exported structs work, including their impl
+const p = Point(1, 2) + Point(3, 4);
+print(p, type(p));   // expect: (4,6) Point
+print(mu.Point == Point);   // expect: true
+
+// private names are not exported; exported vars are snapshots
+print(math_util.calls, math_util.is_even, math_util.snapshot);   // expect: nil nil 5
+print(has(math_util, "square"), has(math_util, "is_odd"), len(math_util));   // expect: true false 6

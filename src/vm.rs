@@ -13,6 +13,7 @@
 
 use crate::analyzer::GlobalInfo;
 use crate::compiler::{self, CompileOptions};
+use crate::hash::FxHashMap;
 use crate::heap::Heap;
 use crate::intern::{Interner, Sym};
 use crate::lexer;
@@ -67,6 +68,12 @@ pub struct Options {
     pub repl: bool,
     /// Print a per-phase timing line to stderr after compiling.
     pub timing: bool,
+}
+
+enum ModuleState {
+    /// Currently executing (importing it again is a cycle).
+    Loading,
+    Done(Value),
 }
 
 pub struct Frame {
@@ -141,6 +148,8 @@ pub struct Vm {
     /// The `string` library table, used for `"text":method()` calls.
     pub string_lib: Value,
     pub rng_state: u64,
+    /// Loaded modules by canonical path.
+    modules: FxHashMap<String, ModuleState>,
 
     stack: *mut Value,
     stack_end: *mut Value,
@@ -180,6 +189,7 @@ impl Vm {
             out: Box::new(std::io::BufWriter::new(std::io::stdout())),
             string_lib: Value::NIL,
             rng_state: 0x9E37_79B9_7F4A_7C15,
+            modules: FxHashMap::default(),
             stack,
             stack_end: unsafe { stack.add(STACK_SIZE) },
             sp: stack,
@@ -255,6 +265,17 @@ impl Vm {
 
     /// Run the front end and the compiler without executing anything.
     pub fn compile(&mut self, name: &str, src: &str) -> Result<(Gc<Proto>, Rc<SourceFile>), KiteError> {
+        self.compile_chunk(name, src, false)
+    }
+
+    /// Like `compile`; `module` chunks keep their top-level names private and evaluate
+    /// to the table of their exports.
+    pub fn compile_chunk(
+        &mut self,
+        name: &str,
+        src: &str,
+        module: bool,
+    ) -> Result<(Gc<Proto>, Rc<SourceFile>), KiteError> {
         let source = SourceFile::new(name, src);
         let err = |kind: ErrorKind, diags: Vec<Diag>, source: &Rc<SourceFile>| KiteError {
             kind,
@@ -271,7 +292,7 @@ impl Vm {
         if self.opts.dump_ast {
             eprintln!("{}", ast.dump(&self.interner, &source.text));
         }
-        let an = analyzer::analyze(&ast, &self.interner, &mut self.global_info, self.opts.repl)
+        let an = analyzer::analyze(&ast, &self.interner, &mut self.global_info, self.opts.repl, module)
             .map_err(|d| err(ErrorKind::Compile, d, &source))?;
         let t_an = t0.elapsed();
         if self.globals.len() < self.interner.len() {
@@ -551,6 +572,68 @@ impl Vm {
             self.nest = nest;
         }
         r
+    }
+
+    // ---- modules -------------------------------------------------------------------
+
+    /// Directory that relative imports are resolved against: the directory of the
+    /// file containing the running `import` (the working directory for the REPL / `-e`).
+    fn import_base(&self) -> std::path::PathBuf {
+        let name = self.frames.last().map(|f| f.closure.proto.source.name.clone()).unwrap_or_default();
+        if name.starts_with('<') {
+            return std::path::PathBuf::from(".");
+        }
+        match std::path::Path::new(&name).parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => std::path::PathBuf::from("."),
+        }
+    }
+
+    /// `import "spec"`: find the file (`spec`, `spec.kite`, `spec/mod.kite`), run it once and
+    /// return its exports table.
+    fn import_module(&mut self, spec: Value) -> RtResult<Value> {
+        let spec = spec.as_str().map(|s| s.as_str().to_string()).unwrap_or_default();
+        let base = self.import_base();
+        let path = {
+            let p = std::path::Path::new(&spec);
+            let joined = if p.is_absolute() { p.to_path_buf() } else { base.join(p) };
+            let candidates = [
+                joined.clone(),
+                std::path::PathBuf::from(format!("{}.kite", joined.display())),
+                joined.join("mod.kite"),
+            ];
+            candidates.into_iter().find(|c| c.is_file()).ok_or_else(|| {
+                rt_err(format!("cannot find module '{}' (searched relative to '{}')", spec, base.display()))
+            })?
+        };
+        let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()).to_string_lossy().into_owned();
+        match self.modules.get(&key) {
+            Some(ModuleState::Done(v)) => return Ok(*v),
+            Some(ModuleState::Loading) => return Err(rt_err(format!("circular import of module '{}'", spec))),
+            None => {}
+        }
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| rt_err(format!("cannot read module '{}': {}", path.display(), e)))?;
+        self.modules.insert(key.clone(), ModuleState::Loading);
+        let result = self.run_module(&path.to_string_lossy(), &text);
+        match result {
+            Ok(v) => {
+                self.modules.insert(key, ModuleState::Done(v));
+                Ok(v)
+            }
+            Err(e) => {
+                self.modules.remove(&key);
+                Err(e)
+            }
+        }
+    }
+
+    fn run_module(&mut self, name: &str, text: &str) -> RtResult<Value> {
+        let (proto, _) = self
+            .compile_chunk(name, text, true)
+            .map_err(|e| rt_err(format!("while importing '{}':\n{}", name, e)))?;
+        let closure = self.heap.alloc(Closure { hdr: Header::new(Kind::Closure), proto, upvals: Box::new([]) });
+        self.call_value(Value::from(closure), &[])
     }
 
     // ---- hooks & semantics used by slow paths ------------------------------------------
@@ -998,6 +1081,11 @@ impl Vm {
                 heap.mark_value(v);
             }
             heap.mark_value(self.string_lib);
+            for m in self.modules.values() {
+                if let ModuleState::Done(v) = m {
+                    heap.mark_value(*v);
+                }
+            }
             heap.trace();
 
             // Unreachable instances with a `destroy` method are resurrected once
@@ -1801,6 +1889,25 @@ impl Vm {
                             }
                             None => throw!("`impl` target must be a struct, got {}", self.type_of(target)),
                         }
+                    }
+
+                    // ---- modules
+                    Op::Import(_) => {
+                        let spec = *consts.add(op.imm24() as usize);
+                        let m = protect!(self.import_module(spec));
+                        push!(m);
+                    }
+                    Op::GetExport(_) => {
+                        let module = top!();
+                        let key = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<Str>();
+                        let v = match module.as_gc::<Table>() {
+                            Some(t) => t.get_str(key),
+                            None => Value::NIL,
+                        };
+                        if v.is_nil() {
+                            throw!("module has no export '{}'", key.as_str());
+                        }
+                        *sp.sub(1) = v;
                     }
 
                     // ---- loops

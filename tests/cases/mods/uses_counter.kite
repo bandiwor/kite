@@ -1,0 +1,2 @@
+import "counter";
+export fn bump() { counter.next() }

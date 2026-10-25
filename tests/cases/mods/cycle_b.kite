@@ -1,0 +1,2 @@
+import "cycle_a";
+export const b = 2;

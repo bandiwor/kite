@@ -1,0 +1,4 @@
+// imports are relative to the importing file
+import "../math_util" as mu;
+import "sibling";
+export fn run(x) { mu.square(x) + sibling.one() }

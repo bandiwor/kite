@@ -40,6 +40,14 @@ pub struct FuncInfo {
 }
 
 pub struct Analysis {
+    /// This chunk is a module: top-level names are private locals and the chunk
+    /// evaluates to its exports table.
+    pub module: bool,
+    /// Exported names and where they live (module chunks only).
+    pub exports: Vec<(Sym, Res)>,
+    /// Where each import binds its names: one entry per `import` (a single
+    /// binding for `import "p"`, one per name for `import { a, b } from "p"`).
+    pub import_res: Vec<Vec<Res>>,
     /// Resolution per node id (identifiers, declarations; for scope nodes the
     /// lowest captured slot that must be closed when the scope ends).
     pub res: Vec<Res>,
@@ -92,7 +100,16 @@ impl FuncState {
     }
 }
 
+struct TopDecl {
+    node: NodeId,
+    name: Sym,
+    is_const: bool,
+    exported: bool,
+    import: Option<(ImportId, usize)>,
+}
+
 struct Analyzer<'a> {
+    module_scope_pushed: bool,
     ast: &'a Ast,
     interner: &'a Interner,
     globals: &'a mut GlobalInfo,
@@ -102,10 +119,28 @@ struct Analyzer<'a> {
     fns: Vec<FuncState>,
     errors: Vec<Diag>,
     repl: bool,
+    module: bool,
+    exports: Vec<(Sym, Res)>,
+    import_res: Vec<Vec<Res>>,
 }
 
-pub fn analyze(ast: &Ast, interner: &Interner, globals: &mut GlobalInfo, repl: bool) -> Result<Analysis, Vec<Diag>> {
+/// `module`: analyse the chunk as a module (private top-level names, exports).
+pub fn analyze(
+    ast: &Ast,
+    interner: &Interner,
+    globals: &mut GlobalInfo,
+    repl: bool,
+    module: bool,
+) -> Result<Analysis, Vec<Diag>> {
     let mut a = Analyzer {
+        module_scope_pushed: false,
+        module,
+        exports: Vec::new(),
+        import_res: ast
+            .imports
+            .iter()
+            .map(|d| vec![Res::None; if d.module_name.is_none() { d.names.len as usize } else { 1 }])
+            .collect(),
         ast,
         interner,
         globals,
@@ -118,13 +153,20 @@ pub fn analyze(ast: &Ast, interner: &Interner, globals: &mut GlobalInfo, repl: b
     };
     let root = ast.root.expect("parsed program");
     a.fns.push(FuncState::new(true));
-    a.hoist_globals(root);
+    if module {
+        a.hoist_module(root);
+    } else {
+        a.hoist_globals(root);
+    }
     a.root_block(root);
     let main = a.fns.pop().unwrap();
     if !a.errors.is_empty() {
         return Err(a.errors);
     }
     Ok(Analysis {
+        module,
+        exports: a.exports,
+        import_res: a.import_res,
         res: a.res,
         funcs: a.funcs,
         for_base: a.for_base,
@@ -153,27 +195,90 @@ impl<'a> Analyzer<'a> {
 
     // ---- globals ---------------------------------------------------------------
 
-    /// Pre-declare top-level names so that functions may refer to constants
-    /// that are defined later in the file and so that assignments to them are
-    /// checked.
-    fn hoist_globals(&mut self, root: NodeId) {
-        let Node::Block { stmts, .. } = self.ast.node(root) else { return };
-        let mut seen: FxHashMap<Sym, ()> = FxHashMap::default();
+    /// Every name a top-level statement declares:
+    /// `(declaring node, name, is_const, exported, which import binding)`.
+    fn top_level_decls(&self, root: NodeId) -> Vec<TopDecl> {
+        let Node::Block { stmts, .. } = self.ast.node(root) else { return Vec::new() };
+        let mut out = Vec::new();
         for id in self.ast.nodes_of(stmts) {
-            let (name, is_const) = match self.ast.node(id) {
-                Node::Var { name, .. } => (name, false),
-                Node::Const { name, .. } => (name, true),
-                Node::Struct { name, .. } => (name, true),
-                _ => continue,
+            let (inner, exported) = match self.ast.node(id) {
+                Node::Export(inner) => (inner, true),
+                _ => (id, false),
             };
-            if seen.insert(name, ()).is_some() && !self.repl {
-                let msg = format!("'{}' is already declared in this scope", self.name(name));
-                self.error(id, msg);
+            match self.ast.node(inner) {
+                Node::Var { name, .. } => out.push(TopDecl { node: inner, name, is_const: false, exported, import: None }),
+                Node::Const { name, .. } | Node::Struct { name, .. } => {
+                    out.push(TopDecl { node: inner, name, is_const: true, exported, import: None })
+                }
+                Node::Import(iid) => {
+                    let d = self.ast.import_def(iid);
+                    if d.module_name.is_none() {
+                        for (k, name) in self.ast.syms_of(d.names).enumerate() {
+                            out.push(TopDecl { node: inner, name, is_const: true, exported, import: Some((iid, k)) });
+                        }
+                    } else {
+                        out.push(TopDecl {
+                            node: inner,
+                            name: d.module_name,
+                            is_const: true,
+                            exported,
+                            import: Some((iid, 0)),
+                        });
+                    }
+                }
+                _ => {}
             }
-            if is_const {
-                self.globals.consts.insert(name);
+        }
+        out
+    }
+
+    fn duplicate_check(&mut self, decls: &[TopDecl]) {
+        let mut seen: FxHashMap<Sym, ()> = FxHashMap::default();
+        for d in decls {
+            if seen.insert(d.name, ()).is_some() && !self.repl {
+                let msg = format!("'{}' is already declared in this scope", self.name(d.name));
+                self.error(d.node, msg);
+            }
+        }
+    }
+
+    /// Script chunks: pre-declare top-level names as globals so that functions may
+    /// refer to constants that are defined later in the file and so that
+    /// assignments to them are checked.
+    fn hoist_globals(&mut self, root: NodeId) {
+        let decls = self.top_level_decls(root);
+        self.duplicate_check(&decls);
+        for d in &decls {
+            if d.is_const {
+                self.globals.consts.insert(d.name);
             } else {
-                self.globals.consts.remove(&name);
+                self.globals.consts.remove(&d.name);
+            }
+            if let Some((iid, k)) = d.import {
+                self.import_res[iid.0 as usize][k] = Res::Global;
+            }
+        }
+    }
+
+    /// Module chunks: every top-level name becomes a private local slot of the module
+    /// function, allocated up front so that functions defined earlier can refer to
+    /// ones defined later (they capture the slot as an upvalue).
+    fn hoist_module(&mut self, root: NodeId) {
+        let decls = self.top_level_decls(root);
+        self.duplicate_check(&decls);
+        self.push_scope(); // the module's root scope; `root_block` reuses it
+        self.module_scope_pushed = true;
+        for d in &decls {
+            let slot = self.alloc_slot(d.node);
+            let fs = self.fs();
+            let scope = fs.scopes.len() - 1;
+            fs.locals.push(Local { name: d.name, slot, is_const: d.is_const, scope });
+            match d.import {
+                Some((iid, k)) => self.import_res[iid.0 as usize][k] = Res::Local(slot),
+                None => self.res[d.node.idx()] = Res::Local(slot),
+            }
+            if d.exported {
+                self.exports.push((d.name, Res::Local(slot)));
             }
         }
     }
@@ -212,9 +317,15 @@ impl<'a> Analyzer<'a> {
         slot as u16
     }
 
-    fn at_top_level(&mut self) -> bool {
+    /// Directly in the top-level scope of the chunk (not inside a block or function)?
+    fn in_root_scope(&mut self) -> bool {
         let fs = self.fs();
         fs.is_main && fs.scopes.len() == 1
+    }
+
+    /// Does a declaration here create a global?  (Script chunks only.)
+    fn at_top_level(&mut self) -> bool {
+        !self.module && self.in_root_scope()
     }
 
     /// Declares a variable; returns where it lives.
@@ -290,7 +401,9 @@ impl<'a> Analyzer<'a> {
 
     fn root_block(&mut self, id: NodeId) {
         let Node::Block { stmts, tail } = self.ast.node(id) else { unreachable!() };
-        self.push_scope(); // scope 0 of main: its declarations are globals
+        if !self.module_scope_pushed {
+            self.push_scope(); // scope 0 of main: its declarations are globals
+        }
         for s in self.ast.nodes_of(stmts) {
             self.expr(s);
         }
@@ -456,6 +569,9 @@ impl<'a> Analyzer<'a> {
                 }
             }
             Node::Return(v) => {
+                if self.module && self.fns.len() == 1 {
+                    self.error(id, "`return` is not allowed at the top level of a module");
+                }
                 if v.is_some() {
                     self.expr(v);
                 }
@@ -463,7 +579,12 @@ impl<'a> Analyzer<'a> {
             Node::Var { name, init } | Node::Const { name, init } => {
                 let is_const = matches!(self.ast.node(id), Node::Const { .. });
                 let is_fn = init.is_some() && matches!(self.ast.node(init), Node::Func(_));
-                if is_fn {
+                if self.res[id.idx()] != Res::None {
+                    // a module's top-level name, declared up front by `hoist_module`
+                    if init.is_some() {
+                        self.expr(init);
+                    }
+                } else if is_fn {
                     // function literals may refer to themselves (recursion)
                     let r = self.declare(name, is_const, id);
                     self.res[id.idx()] = r;
@@ -477,8 +598,21 @@ impl<'a> Analyzer<'a> {
                 }
             }
             Node::Struct { name, .. } => {
-                let r = self.declare(name, true, id);
-                self.res[id.idx()] = r;
+                if self.res[id.idx()] == Res::None {
+                    let r = self.declare(name, true, id);
+                    self.res[id.idx()] = r;
+                }
+            }
+            Node::Import(_) => {
+                if !self.in_root_scope() {
+                    self.error(id, "`import` is only allowed at the top level of a file");
+                }
+            }
+            Node::Export(inner) => {
+                if !self.in_root_scope() {
+                    self.error(id, "`export` is only allowed at the top level of a file");
+                }
+                self.expr(inner);
             }
             Node::Impl { target, methods } => {
                 self.expr(target);

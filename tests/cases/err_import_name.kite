@@ -1,0 +1,2 @@
+// error: cannot derive a name
+import "mods/some-thing";

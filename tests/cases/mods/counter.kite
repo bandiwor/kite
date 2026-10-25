@@ -1,0 +1,3 @@
+print("loading counter");
+var n = 0;
+export fn next() { n += 1; n }

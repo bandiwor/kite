@@ -1,0 +1,2 @@
+// error: after `export`
+export 1 + 2;

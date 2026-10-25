@@ -1,0 +1,2 @@
+// error: invalid operands for '+'
+import "mods/runtime_err";

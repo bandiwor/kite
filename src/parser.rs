@@ -424,6 +424,21 @@ impl<'a> Parser<'a> {
                 let f = self.parse_fn_rest(name, start)?;
                 Ok(StmtResult::Stmt(self.ast.push(Node::Const { name, init: f }, start)))
             }
+            T::Import => self.parse_import(start),
+            T::Export => {
+                self.pos += 1;
+                let ok = matches!(self.kind(), T::Var | T::Const | T::Struct)
+                    || (self.kind() == T::Fn && self.kind_at(1) == T::Ident);
+                if !ok {
+                    let found = self.describe_current();
+                    return self
+                        .err(format!("expected `var`, `const`, `fn` or `struct` after `export`, found {}", found));
+                }
+                let inner = match self.parse_stmt(top)? {
+                    StmtResult::Stmt(n) | StmtResult::Tail(n) => n,
+                };
+                Ok(StmtResult::Stmt(self.ast.push(Node::Export(inner), start)))
+            }
             T::Struct => {
                 self.pos += 1;
                 let name = self.expect_ident("after `struct`")?;
@@ -517,6 +532,83 @@ impl<'a> Parser<'a> {
     /// needs no `;`: nothing after it could continue the expression anyway.
     fn prev_is_rbrace(&self) -> bool {
         self.pos > 0 && self.toks[self.pos - 1].kind() == T::RBrace
+    }
+
+    /// A string literal naming a module; returns the source range of its contents.
+    fn parse_path(&mut self) -> PResult<(u32, u32)> {
+        let t = self.tok();
+        if t.kind() != T::String {
+            let found = self.describe_current();
+            return self.err(format!("expected a string with the module path, found {}", found));
+        }
+        self.pos += 1;
+        let raw = &self.src[t.start as usize + 1..t.end() - 1];
+        if raw.is_empty() {
+            self.error_at(t, "empty module path".to_string());
+            return Err(());
+        }
+        if let Err(m) = unescape(raw) {
+            self.error_at(t, m);
+            return Err(());
+        }
+        Ok((t.start + 1, t.len() as u32 - 2))
+    }
+
+    fn at_word(&self, word: &str) -> bool {
+        self.kind() == T::Ident && self.text(self.tok()) == word
+    }
+
+    /// `import "path"`, `import "path" as name`, `import { a, b } from "path"`.
+    fn parse_import(&mut self, start: u32) -> PResult<StmtResult> {
+        self.pos += 1; // `import`
+        let mut names = ListRef::EMPTY;
+        let mut module_name = Sym::NONE;
+        let (path_start, path_len);
+        if self.kind() == T::LBrace {
+            self.pos += 1;
+            let mark = self.scratch.len();
+            while self.kind() != T::RBrace {
+                let n = match self.expect_ident("in the import list") {
+                    Ok(n) => n,
+                    Err(()) => {
+                        self.scratch.truncate(mark);
+                        return Err(());
+                    }
+                };
+                self.scratch.push(n.0);
+                if !self.eat(T::Comma) {
+                    break;
+                }
+            }
+            names = self.finish_list(mark);
+            self.expect(T::RBrace, "to close the import list")?;
+            if !self.at_word("from") {
+                let found = self.describe_current();
+                return self.err(format!("expected `from` after the import list, found {}", found));
+            }
+            self.pos += 1;
+            (path_start, path_len) = self.parse_path()?;
+        } else {
+            let ptok = self.tok();
+            (path_start, path_len) = self.parse_path()?;
+            if self.at_word("as") {
+                self.pos += 1;
+                module_name = self.expect_ident("after `as`")?;
+            } else {
+                // `import "lib/vec.kite"` binds `vec`
+                let raw = &self.src[path_start as usize..(path_start + path_len) as usize];
+                let seg = raw.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(raw);
+                let seg = seg.strip_suffix(".kite").unwrap_or(seg);
+                if !crate::vm::is_ident(seg) {
+                    self.error_at(ptok, format!("cannot derive a name from `{}`; write `as name`", raw));
+                    return Err(());
+                }
+                module_name = self.interner.intern(seg);
+            }
+        }
+        self.expect_semi("after import")?;
+        let id = self.ast.add_import(ImportDef { path_start, path_len, module_name, names });
+        Ok(StmtResult::Stmt(self.ast.push(Node::Import(id), start)))
     }
 
     fn expect_semi(&mut self, what: &str) -> PResult<()> {

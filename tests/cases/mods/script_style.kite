@@ -1,0 +1,3 @@
+// a file can run as a script too: `export` is then ignored
+export fn hello() { "hi" }
+print(hello());

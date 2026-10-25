@@ -1,0 +1,2 @@
+fn boom() { 1 + nil }
+export const x = boom();

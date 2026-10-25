@@ -1,0 +1,2 @@
+// error: circular import
+import "mods/cycle_a";

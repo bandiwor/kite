@@ -1,0 +1,2 @@
+// error: only allowed at the top level
+fn f() { import "mods/counter"; }

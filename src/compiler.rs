@@ -107,8 +107,12 @@ pub fn compile(
     };
     let root = ast.root.expect("parsed program");
     c.fns.push(FnBuilder::new(false));
-    c.expr(root);
-    c.emit(Op::Return);
+    if an.module {
+        c.module_root(root);
+    } else {
+        c.expr(root);
+        c.emit(Op::Return);
+    }
     let fb = c.fns.pop().unwrap();
     let proto = c.finish(fb, "<main>".into(), 0, &an.main);
     if c.errors.is_empty() {
@@ -335,6 +339,26 @@ impl<'a> Compiler<'a> {
 
     // ---- statements ----------------------------------------------------------------
 
+    /// A module evaluates its statements and then returns the table of its exports.
+    fn module_root(&mut self, root: NodeId) {
+        let Node::Block { stmts, tail } = self.ast.node(root) else { unreachable!() };
+        for s in self.ast.nodes_of(stmts) {
+            self.stmt(s);
+        }
+        if tail.is_some() {
+            self.expr(tail);
+            self.emit(Op::Pop);
+        }
+        self.cur = 0;
+        self.emit(Op::NewTable(self.an.exports.len().min(u16::MAX as usize) as u16));
+        for &(name, res) in &self.an.exports {
+            self.get_var(res, name);
+            let k = self.sym_const(name);
+            self.emit(Op::InitField(k));
+        }
+        self.emit(Op::Return);
+    }
+
     fn store_decl(&mut self, res: Res, name: Sym) {
         match res {
             Res::Local(s) => {
@@ -377,6 +401,28 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::Struct(k));
                 let res = self.an.res[id.idx()];
                 self.store_decl(res, name);
+            }
+            Node::Export(inner) => self.stmt(inner),
+            Node::Import(iid) => {
+                let d = self.ast.import_def(iid);
+                let raw = &self.source.text[d.path_start as usize..(d.path_start + d.path_len) as usize];
+                let path = unescape(raw).unwrap_or_default();
+                let k = self.str_const(&path);
+                self.emit(Op::Import(k));
+                if d.module_name.is_none() {
+                    // import { a, b } from "path"
+                    for (j, name) in self.ast.syms_of(d.names).enumerate() {
+                        self.emit(Op::Dup);
+                        let nk = self.sym_const(name);
+                        self.emit(Op::GetExport(nk));
+                        let res = self.an.import_res[iid.0 as usize][j];
+                        self.store_decl(res, name);
+                    }
+                    self.emit(Op::Pop);
+                } else {
+                    let res = self.an.import_res[iid.0 as usize][0];
+                    self.store_decl(res, d.module_name);
+                }
             }
             Node::Impl { target, methods } => {
                 self.expr(target);
@@ -712,7 +758,12 @@ impl<'a> Compiler<'a> {
                 // (this `nil` is dead code and removed by the peephole).
                 self.emit(Op::Nil);
             }
-            Node::Var { .. } | Node::Const { .. } | Node::Struct { .. } | Node::Impl { .. } => {
+            Node::Var { .. }
+            | Node::Const { .. }
+            | Node::Struct { .. }
+            | Node::Impl { .. }
+            | Node::Import(_)
+            | Node::Export(_) => {
                 unreachable!("declarations are statements")
             }
         }

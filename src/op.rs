@@ -227,6 +227,12 @@ pub enum Op {
     /// `[type, closure] -> [type]`: register an `impl` function under `consts[k]`.
     DefMethod(U24),
 
+    // ---- modules ----
+    /// Load (or fetch from the cache) the module whose path is `consts[k]`; pushes its exports table.
+    Import(U24),
+    /// `[module] -> [value]`: read an export, failing if the module does not have it.
+    GetExport(U24),
+
     // ---- loops (double) ----
     /// Range loop setup: locals `s`,`s+1` hold start/end; if start >= end jump.
     /// Otherwise the loop variable (`s+2`) is set to start.
@@ -250,14 +256,15 @@ impl Op {
         use Op::*;
         match *self {
             Nil | True | False | Const(_) | Dup | GetLocal(_) | GetUpval(_) | GetGlobal(_) | Closure(_)
-            | NewTable(_) | Struct(_) | GetMethod(_) | AddLL(..) | SubLL(..) | MulLL(..) | GetLocalField(..) => 1,
+            | NewTable(_) | Struct(_) | GetMethod(_) | AddLL(..) | SubLL(..) | MulLL(..) | GetLocalField(..)
+            | Import(_) => 1,
             Dup2 | GetLocal2(..) => 2,
             Pop | StoreLocal(_) | StoreUpval(_) | StoreGlobal(_) | DefGlobal(_) | Append(_) | InitField(_)
             | SetField(_) | GetIndex | DefMethod(_) | Return => -1,
             PopN(n) => -(n as i32),
             SetLocal(_) | SetUpval(_) | SetGlobal(_) | CloseUpvals(_) | Neg | Not | BitNot | AddK(_) | SubK(_)
             | MulK(_) | DivK(_) | RemK(_) | AddLocalK(..) | Jump(_) | GetField(_) | ForPrep(_) | ForLoop(_)
-            | IterNext1(_) | IterNext2(_) | ReturnNil | ReturnLocal(_) | JNotEqLL(..) | JNotNeLL(..)
+            | IterNext1(_) | IterNext2(_) | ReturnNil | ReturnLocal(_) | GetExport(_) | JNotEqLL(..) | JNotNeLL(..)
             | JNotLtLL(..) | JNotLeLL(..) | JNotGtLL(..) | JNotGeLL(..) | JNotEqLK(..) | JNotNeLK(..)
             | JNotLtLK(..) | JNotLeLK(..) | JNotGtLK(..) | JNotGeLK(..) | Ext(_) => 0,
             Add | Sub | Mul | Div | Rem | Pow | BitAnd | BitOr | BitXor | Shl | Shr | Eq | Ne | Lt | Le | Gt
@@ -405,6 +412,8 @@ impl Op {
                 | GetMethod(_)
                 | Struct(_)
                 | DefMethod(_)
+                | Import(_)
+                | GetExport(_)
                 | Jump(_)
                 | JumpIfFalse(_)
                 | JumpIfTrue(_)
@@ -426,7 +435,7 @@ impl Op {
         match self {
             Const(k) | GetGlobal(k) | SetGlobal(k) | StoreGlobal(k) | DefGlobal(k) | AddK(k) | SubK(k) | MulK(k)
             | DivK(k) | RemK(k) | Closure(k) | InitField(k) | GetField(k) | SetField(k) | StoreField(k)
-            | GetMethod(k) | Struct(k) | DefMethod(k) => k.get(),
+            | GetMethod(k) | Struct(k) | DefMethod(k) | Import(k) | GetExport(k) => k.get(),
             Jump(o) | JumpIfFalse(o) | JumpIfTrue(o) | And(o) | Or(o) | JNotEq(o) | JNotNe(o) | JNotLt(o)
             | JNotLe(o) | JNotGt(o) | JNotGe(o) | Ext(o) => o.get() as u32,
             _ => unreachable!(),

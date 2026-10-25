@@ -50,7 +50,7 @@ fn dis(proto: Gc<Proto>, interner: &Interner, out: &mut String) {
         match op {
             Op::Const(a) | Op::AddK(a) | Op::SubK(a) | Op::MulK(a) | Op::DivK(a) | Op::RemK(a) | Op::GetField(a)
             | Op::SetField(a) | Op::StoreField(a) | Op::InitField(a) | Op::GetMethod(a) | Op::Closure(a)
-            | Op::Struct(a) | Op::DefMethod(a) => note = k(a.get() as usize),
+            | Op::Struct(a) | Op::DefMethod(a) | Op::Import(a) | Op::GetExport(a) => note = k(a.get() as usize),
             Op::AddLocalK(_, a) | Op::GetLocalField(_, a) => note = k(a as usize),
             Op::JNotEqLK(_, a) | Op::JNotNeLK(_, a) | Op::JNotLtLK(_, a) | Op::JNotLeLK(_, a) | Op::JNotGtLK(_, a)
             | Op::JNotGeLK(_, a) => note = k(a as usize),

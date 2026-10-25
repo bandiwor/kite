@@ -1,0 +1,2 @@
+// error: while importing
+import "mods/bad_syntax";

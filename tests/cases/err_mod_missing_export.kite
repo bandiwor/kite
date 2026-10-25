@@ -1,0 +1,2 @@
+// error: module has no export 'zzz'
+import { zzz } from "mods/math_util";

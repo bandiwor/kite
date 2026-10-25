@@ -32,6 +32,8 @@ fn keyword(s: &[u8]) -> TokenKind {
         b"struct" => Struct,
         b"impl" => Impl,
         b"do" => Do,
+        b"import" => Import,
+        b"export" => Export,
         b"nil" => Nil,
         b"true" => True,
         b"false" => False,

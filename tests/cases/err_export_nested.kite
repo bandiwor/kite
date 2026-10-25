@@ -1,0 +1,2 @@
+// error: only allowed at the top level
+{ export const x = 1; }

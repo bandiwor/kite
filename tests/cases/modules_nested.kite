@@ -1,0 +1,7 @@
+import "mods/nested/inner";
+print(inner.run(4));   // expect: 17
+import "mods/dir_mod";
+print(dir_mod.where);   // expect: dir_mod
+// a path with an extension and a derived name
+import "mods/nested/sibling.kite";
+print(sibling.one());   // expect: 1

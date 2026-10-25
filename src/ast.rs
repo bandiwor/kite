@@ -35,6 +35,9 @@ pub struct FuncId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ForId(pub u32);
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ImportId(pub u32);
+
 /// A slice of the shared side list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ListRef {
@@ -172,6 +175,10 @@ pub enum Node {
         target: NodeId,
         methods: ListRef,
     },
+    /// `import "path" [as name]` / `import { a, b } from "path"`.
+    Import(ImportId),
+    /// `export <var | const | fn | struct declaration>`.
+    Export(NodeId),
 }
 
 const _: () = assert!(std::mem::size_of::<Node>() == 16);
@@ -181,6 +188,16 @@ pub struct FuncDef {
     /// Raw `Sym` values.
     pub params: ListRef,
     pub body: NodeId,
+}
+
+pub struct ImportDef {
+    /// Source range of the path literal (without quotes, escapes unprocessed).
+    pub path_start: u32,
+    pub path_len: u32,
+    /// Binding for the whole module (`Sym::NONE` for a named import list).
+    pub module_name: Sym,
+    /// Raw `Sym` values of `import { a, b }`.
+    pub names: ListRef,
 }
 
 pub struct ForDef {
@@ -199,6 +216,7 @@ pub struct Ast {
     pub lists: Vec<u32>,
     pub funcs: Vec<FuncDef>,
     pub fors: Vec<ForDef>,
+    pub imports: Vec<ImportDef>,
     pub root: Option<NodeId>,
 }
 
@@ -252,6 +270,15 @@ impl Ast {
     pub fn add_for(&mut self, f: ForDef) -> ForId {
         self.fors.push(f);
         ForId(self.fors.len() as u32 - 1)
+    }
+
+    pub fn add_import(&mut self, i: ImportDef) -> ImportId {
+        self.imports.push(i);
+        ImportId(self.imports.len() as u32 - 1)
+    }
+
+    pub fn import_def(&self, id: ImportId) -> &ImportDef {
+        &self.imports[id.0 as usize]
     }
 
     pub fn func(&self, id: FuncId) -> &FuncDef {
@@ -426,6 +453,21 @@ impl Ast {
             Node::Struct { name, fields } => {
                 let fs: Vec<&str> = self.syms_of(fields).map(|s| i.get(s)).collect();
                 line!("(struct {} [{}])", i.get(name), fs.join(" "));
+            }
+            Node::Import(id) => {
+                let d = self.import_def(id);
+                let path = &src[d.path_start as usize..(d.path_start + d.path_len) as usize];
+                if d.module_name.is_none() {
+                    let names: Vec<&str> = self.syms_of(d.names).map(|s| i.get(s)).collect();
+                    line!("(import {:?} {{{}}})", path, names.join(" "));
+                } else {
+                    line!("(import {:?} as {})", path, i.get(d.module_name));
+                }
+            }
+            Node::Export(inner) => {
+                line!("(export");
+                self.dump_node(inner, i, src, ind + 1, out);
+                line!(")");
             }
             Node::Impl { target, methods } => {
                 line!("(impl");

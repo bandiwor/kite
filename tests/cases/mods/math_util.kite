@@ -1,0 +1,18 @@
+// A module: top-level names are private unless exported.
+var calls = 0;
+
+// mutual recursion between private functions defined in either order
+fn is_even(n) { if n == 0 { true } else { is_odd(n - 1) } }
+fn is_odd(n) { if n == 0 { false } else { is_even(n - 1) } }
+
+export fn square(x) { calls += 1; x * x }
+export fn count() { calls }
+export fn even(n) { is_even(n) }
+export const PI = 3.14159;
+export var snapshot = 5;
+
+export struct Point { x, y }
+impl Point {
+    fn str(p) { "(" + p.x + "," + p.y + ")" }
+    fn add(a, b) { Point(a.x + b.x, a.y + b.y) }
+}

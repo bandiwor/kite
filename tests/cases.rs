@@ -31,13 +31,13 @@ struct Outcome {
     error: Option<String>,
 }
 
-fn run(src: &str, no_opt: bool, stress: bool) -> Outcome {
+fn run(path: &std::path::Path, src: &str, no_opt: bool, stress: bool) -> Outcome {
     let buf = SharedBuf::default();
     let mut vm = Vm::new();
     vm.out = Box::new(buf.clone());
     vm.opts.no_optimize = no_opt;
     vm.heap.stress = stress;
-    let r = vm.eval("test.kite", src);
+    let r = vm.eval(&path.to_string_lossy(), src);
     vm.shutdown();
     let stdout = String::from_utf8(buf.0.borrow().clone()).unwrap();
     Outcome { stdout, error: r.err().map(|e| e.to_string()) }
@@ -61,7 +61,7 @@ fn expectations(src: &str) -> (Vec<String>, Option<String>) {
 fn check(path: &PathBuf, no_opt: bool, stress: bool) -> Result<(), String> {
     let src = std::fs::read_to_string(path).unwrap();
     let (expected, expected_err) = expectations(&src);
-    let out = run(&src, no_opt, stress);
+    let out = run(path, &src, no_opt, stress);
     let label = format!(
         "{} [{}{}]",
         path.file_name().unwrap().to_string_lossy(),
