@@ -147,6 +147,8 @@ pub struct Vm {
     pub out: Box<dyn Write>,
     /// The `string` library table, used for `"text":method()` calls.
     pub string_lib: Value,
+    /// The `array` library table, used for `arr:method()` calls.
+    pub array_lib: Value,
     /// The prelude's `Option`, `Result` and `Error` types (`NIL` while the prelude loads).
     pub option_ty: Value,
     pub result_ty: Value,
@@ -192,6 +194,7 @@ impl Vm {
             opts: Options::default(),
             out: Box::new(std::io::BufWriter::new(std::io::stdout())),
             string_lib: Value::NIL,
+            array_lib: Value::NIL,
             option_ty: Value::NIL,
             result_ty: Value::NIL,
             error_ty: Value::NIL,
@@ -241,6 +244,17 @@ impl Vm {
 
     pub fn new_table(&mut self) -> Gc<Table> {
         self.heap.new_table(0)
+    }
+
+    pub fn new_array(&mut self, items: Vec<Value>) -> Gc<Array> {
+        self.heap.new_array(items)
+    }
+
+    /// Push onto an array, keeping the GC's byte accounting honest.
+    pub fn array_push(&mut self, arr: &mut Gc<Array>, v: Value) {
+        let before = arr.mem_size();
+        arr.items.push(v);
+        self.heap.bytes += arr.mem_size().saturating_sub(before);
     }
 
     /// Temporarily keep `v` alive across calls back into the VM (natives
@@ -1002,8 +1016,32 @@ impl Vm {
         })
     }
 
+    /// Bounds-checked position for `arr[key]`; every failure is a panic.
+    fn array_position(&self, arr: &Array, key: Value) -> RtResult<usize> {
+        if !key.is_num() {
+            return Err(rt_err(format!("array index must be a number, got {}", self.type_of(key))));
+        }
+        let n = key.as_num();
+        if n.fract() != 0.0 || n < 0.0 {
+            return Err(rt_err(format!("array index must be a non-negative integer, got {}", fmt_num_string(n))));
+        }
+        if n >= arr.items.len() as f64 {
+            return Err(rt_err(format!(
+                "array index {} is out of bounds (length {})",
+                fmt_num_string(n),
+                arr.items.len()
+            )));
+        }
+        Ok(n as usize)
+    }
+
     fn get_index_slow(&mut self, obj: Value, key: Value) -> RtResult<Value> {
         match obj.obj_kind() {
+            Some(Kind::Array) => {
+                let a = unsafe { obj.as_gc_unchecked::<Array>() };
+                let i = self.array_position(&a, key)?;
+                Ok(a.items[i])
+            }
             Some(Kind::Table) => Ok(unsafe { obj.as_gc_unchecked::<Table>() }.get(key)),
             Some(Kind::Str) => {
                 let s = unsafe { obj.as_gc_unchecked::<Str>() };
@@ -1044,6 +1082,12 @@ impl Vm {
 
     fn set_index_slow(&mut self, obj: Value, key: Value, v: Value) -> RtResult<()> {
         match obj.obj_kind() {
+            Some(Kind::Array) => {
+                let mut a = unsafe { obj.as_gc_unchecked::<Array>() };
+                let i = self.array_position(&a, key)?;
+                a.items[i] = v;
+                Ok(())
+            }
             Some(Kind::Table) => {
                 let mut t = unsafe { obj.as_gc_unchecked::<Table>() };
                 self.table_set(&mut t, key, v)
@@ -1086,6 +1130,15 @@ impl Vm {
                 }
                 Ok(v)
             }
+            Some(Kind::Array) => {
+                if let Some(lib) = self.array_lib.as_gc::<Table>() {
+                    let f = lib.get_str(name);
+                    if !f.is_nil() {
+                        return Ok(f);
+                    }
+                }
+                Err(rt_err(format!("array has no method '{}'", name.as_str())))
+            }
             Some(Kind::Str) => {
                 if let Some(lib) = self.string_lib.as_gc::<Table>() {
                     let f = lib.get_str(name);
@@ -1103,6 +1156,10 @@ impl Vm {
     fn iter_next(&mut self, v: Value, pos: usize) -> RtResult<Option<(usize, Value, Value)>> {
         match v.obj_kind() {
             Some(Kind::Table) => Ok(unsafe { v.as_gc_unchecked::<Table>() }.next(pos)),
+            Some(Kind::Array) => {
+                let a = unsafe { v.as_gc_unchecked::<Array>() };
+                Ok(a.items.get(pos).map(|&x| (pos + 1, Value::num(pos as f64), x)))
+            }
             Some(Kind::Str) => {
                 let s = unsafe { v.as_gc_unchecked::<Str>() };
                 let text = s.as_str();
@@ -1168,14 +1225,30 @@ impl Vm {
                     out.push_str(s.as_str());
                 }
             }
+            Some(Kind::Array) => {
+                if depth > 6 {
+                    out.push_str("[...]");
+                    return Ok(());
+                }
+                let a = unsafe { v.as_gc_unchecked::<Array>() };
+                out.push('[');
+                // snapshot: printing may call `str` hooks that mutate the array
+                let items = a.items.clone();
+                for (i, item) in items.into_iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    self.write_value(item, out, true, depth + 1)?;
+                }
+                out.push(']');
+            }
             Some(Kind::Table) => {
                 if depth > 6 {
                     out.push_str("{...}");
                     return Ok(());
                 }
                 let t = unsafe { v.as_gc_unchecked::<Table>() };
-                let only_array = t.len() == t.arr.len();
-                out.push(if only_array { '[' } else { '{' });
+                out.push('{');
                 let mut pos = 0;
                 let mut first = true;
                 // snapshot entries: printing may call `str` hooks that mutate the table
@@ -1184,21 +1257,19 @@ impl Vm {
                     pos = np;
                     items.push((k, val));
                 }
-                for (i, (k, val)) in items.into_iter().enumerate() {
+                for (k, val) in items {
                     if !first {
                         out.push_str(", ");
                     }
                     first = false;
-                    if !(only_array && k.is_num() && k.as_num() == i as f64) {
-                        match k.as_str() {
-                            Some(ks) if is_ident(ks.as_str()) => out.push_str(ks.as_str()),
-                            _ => self.write_value(k, out, true, depth + 1)?,
-                        }
-                        out.push_str(": ");
+                    match k.as_str() {
+                        Some(ks) if is_ident(ks.as_str()) => out.push_str(ks.as_str()),
+                        _ => self.write_value(k, out, true, depth + 1)?,
                     }
+                    out.push_str(": ");
                     self.write_value(val, out, true, depth + 1)?;
                 }
-                out.push(if only_array { ']' } else { '}' });
+                out.push('}');
             }
             Some(Kind::Closure) => {
                 let c = unsafe { v.as_gc_unchecked::<Closure>() };
@@ -1300,6 +1371,7 @@ impl Vm {
                 heap.mark_value(v);
             }
             heap.mark_value(self.string_lib);
+            heap.mark_value(self.array_lib);
             heap.mark_value(self.option_ty);
             heap.mark_value(self.result_ty);
             heap.mark_value(self.error_ty);
@@ -1977,16 +2049,17 @@ impl Vm {
                         push!(Value::from(t));
                         gc_check!();
                     }
-                    Op::Append(i) => {
+                    Op::NewArray(n) => {
+                        let a = self.heap.new_array(Vec::with_capacity(n as usize));
+                        push!(Value::from(a));
+                        gc_check!();
+                    }
+                    Op::Append => {
                         let v = pop!();
-                        let mut t = top!().as_gc_unchecked::<Table>();
-                        let before = t.mem_size();
-                        if t.arr.len() == i as usize {
-                            t.push(v);
-                        } else {
-                            let _ = t.set(Value::num(i as f64), v);
-                        }
-                        self.heap.bytes += t.mem_size().saturating_sub(before);
+                        let mut a = top!().as_gc_unchecked::<Array>();
+                        let before = a.mem_size();
+                        a.items.push(v);
+                        self.heap.bytes += a.mem_size().saturating_sub(before);
                     }
                     Op::InitField(_) => {
                         let v = pop!();
@@ -2043,7 +2116,12 @@ impl Vm {
                     Op::GetIndex => {
                         let key = peek!(0);
                         let obj = peek!(1);
-                        let r = if let Some(t) = obj.as_gc::<Table>() {
+                        let r = if let Some(a) = obj.as_gc::<Array>() {
+                            match array_slot(&a, key) {
+                                Some(i) => *a.items.get_unchecked(i),
+                                None => protect!(self.get_index_slow(obj, key)),
+                            }
+                        } else if let Some(t) = obj.as_gc::<Table>() {
                             t.get(key)
                         } else {
                             protect!(self.get_index_slow(obj, key))
@@ -2059,7 +2137,12 @@ impl Vm {
                         let obj = peek!(2);
                         // fast path: in-bounds array write
                         let mut done = false;
-                        if let Some(mut t) = obj.as_gc::<Table>() {
+                        if let Some(mut a) = obj.as_gc::<Array>() {
+                            if let Some(i) = array_slot(&a, key) {
+                                *a.items.get_unchecked_mut(i) = v;
+                                done = true;
+                            }
+                        } else if let Some(mut t) = obj.as_gc::<Table>() {
                             if key.is_num() && !v.is_nil() {
                                 let n = key.as_num();
                                 let i = n as usize;
@@ -2191,9 +2274,12 @@ impl Vm {
                         let two = matches!(op, Op::IterNext2(..));
                         let coll = *base.add(s as usize);
                         let pos = (*base.add(s as usize + 1)).as_num() as usize;
-                        let next = match coll.as_gc::<Table>() {
-                            Some(t) => t.next(pos),
-                            None => protect!(self.iter_next(coll, pos)),
+                        let next = if let Some(a) = coll.as_gc::<Array>() {
+                            a.items.get(pos).map(|&v| (pos + 1, Value::num(pos as f64), v))
+                        } else if let Some(t) = coll.as_gc::<Table>() {
+                            t.next(pos)
+                        } else {
+                            protect!(self.iter_next(coll, pos))
                         };
                         match next {
                             Some((np, key, val)) => {
@@ -2217,6 +2303,25 @@ impl Vm {
 }
 
 // ---- free helpers -----------------------------------------------------------------------
+
+/// In-bounds position of `key` in `arr`, or `None` (the caller then reports the precise error).
+#[inline(always)]
+fn array_slot(arr: &Array, key: Value) -> Option<usize> {
+    if key.is_num() {
+        let n = key.as_num();
+        let i = n as usize;
+        if i as f64 == n && i < arr.items.len() {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn fmt_num_string(n: f64) -> String {
+    let mut s = String::new();
+    fmt_num(n, &mut s);
+    s
+}
 
 fn arith_num(op: Arith, a: f64, b: f64) -> f64 {
     match op {

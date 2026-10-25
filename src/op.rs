@@ -200,10 +200,12 @@ pub enum Op {
     Closure(U24),
 
     // ---- tables, fields, structs ----
-    /// New table with room for `n` array items.
+    /// New empty table (`n` = expected number of entries).
     NewTable(u16),
-    /// `[t, v] -> [t]`  (array literal element number `i`; a `nil` leaves a hole)
-    Append(u16),
+    /// New empty array with room for `n` items.
+    NewArray(u16),
+    /// `[arr, v] -> [arr]`: array literal element (any value, `nil` included).
+    Append,
     /// `[t, v] -> [t]`  (table literal `name: v`)
     InitField(U24),
     /// `[t, k, v] -> [t]`  (table literal `[k]: v`)
@@ -271,10 +273,10 @@ impl Op {
         use Op::*;
         match *self {
             Nil | True | False | Const(_) | Dup | GetLocal(_) | GetUpval(_) | GetGlobal(_) | Closure(_)
-            | NewTable(_) | Struct(_) | GetMethod(_) | AddLL(..) | SubLL(..) | MulLL(..) | GetLocalField(..)
-            | Import(_) | MatchFail(_) => 1,
+            | NewTable(_) | NewArray(_) | Struct(_) | GetMethod(_) | AddLL(..) | SubLL(..) | MulLL(..)
+            | GetLocalField(..) | Import(_) | MatchFail(_) => 1,
             Dup2 | GetLocal2(..) => 2,
-            Pop | StoreLocal(_) | StoreUpval(_) | StoreGlobal(_) | DefGlobal(_) | Append(_) | InitField(_)
+            Pop | StoreLocal(_) | StoreUpval(_) | StoreGlobal(_) | DefGlobal(_) | Append | InitField(_)
             | SetField(_) | GetIndex | DefMethod(_) | Return => -1,
             PopN(n) => -(n as i32),
             SetLocal(_) | SetUpval(_) | SetGlobal(_) | CloseUpvals(_) | Neg | Not | BitNot | AddK(_) | SubK(_)

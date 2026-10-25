@@ -4,7 +4,7 @@ print(s:sub(0, 5), s:sub(7), s:sub(-5), s:sub(3, -3));   // expect: Hello World 
 print(s:find("World"), s:find("xyz"), s:find("o", 5));   // expect: 7 nil 8
 print(s:contains("lo, W"), s:starts_with("Hell"), s:ends_with("d"));   // expect: true true true
 print("a,b,,c":split(","));   // expect: ["a", "b", "", "c"]
-print(string.join(["x", 1, true, nil], "-"));   // expect: x-1-true
+print(string.join(["x", 1, true, nil], "-"));   // expect: x-1-true-nil
 print("  trim me  ":trim() + "|");   // expect: trim me|
 print("aXbXc":replace("X", "--"));   // expect: a--b--c
 print("ab":rep(3), "abc":reverse());   // expect: ababab cba

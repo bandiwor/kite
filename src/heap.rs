@@ -93,6 +93,10 @@ impl Heap {
         self.alloc(Table::new(cap))
     }
 
+    pub fn new_array(&mut self, items: Vec<Value>) -> Gc<Array> {
+        self.alloc(Array::new(items))
+    }
+
     // ---- marking ---------------------------------------------------------------
 
     #[inline]
@@ -142,6 +146,13 @@ impl Heap {
                     }
                 });
                 for v in tmp {
+                    self.mark_value(v);
+                }
+            }
+            Kind::Array => {
+                let a = &*(p as *mut Array);
+                for i in 0..a.items.len() {
+                    let v = a.items[i];
                     self.mark_value(v);
                 }
             }
@@ -259,6 +270,7 @@ unsafe fn obj_size(p: *mut Header) -> usize {
     match (*p).kind {
         Kind::Str => (*(p as *mut Str)).heap_size(),
         Kind::Table => (*(p as *mut Table)).heap_size(),
+        Kind::Array => (*(p as *mut Array)).heap_size(),
         Kind::Proto => (*(p as *mut Proto)).heap_size(),
         Kind::Closure => (*(p as *mut Closure)).heap_size(),
         Kind::Upvalue => (*(p as *mut Upvalue)).heap_size(),
@@ -273,6 +285,7 @@ unsafe fn free_obj(p: *mut Header) {
     match (*p).kind {
         Kind::Str => drop(Box::from_raw(p as *mut Str)),
         Kind::Table => drop(Box::from_raw(p as *mut Table)),
+        Kind::Array => drop(Box::from_raw(p as *mut Array)),
         Kind::Proto => drop(Box::from_raw(p as *mut Proto)),
         Kind::Closure => drop(Box::from_raw(p as *mut Closure)),
         Kind::Upvalue => drop(Box::from_raw(p as *mut Upvalue)),

@@ -696,19 +696,11 @@ impl<'a> Compiler<'a> {
                 self.emit(Op::GetIndex);
             }
             Node::Array { items } => {
-                self.emit(Op::NewTable(items.len.min(u16::MAX as u32) as u16));
-                for (i, a) in self.ast.nodes_of(items).enumerate() {
-                    if i < u16::MAX as usize {
-                        self.expr(a);
-                        self.at(id);
-                        self.emit(Op::Append(i as u16));
-                    } else {
-                        let k = self.num_const(i as f64);
-                        self.emit(Op::Const(k));
-                        self.expr(a);
-                        self.at(id);
-                        self.emit(Op::InitIndex);
-                    }
+                self.emit(Op::NewArray(items.len.min(u16::MAX as u32) as u16));
+                for a in self.ast.nodes_of(items) {
+                    self.expr(a);
+                    self.at(id);
+                    self.emit(Op::Append);
                 }
             }
             Node::Table { entries } => {

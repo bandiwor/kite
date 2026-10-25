@@ -5,7 +5,7 @@
 //! `"permission"`, `"exists"`, `"utf8"` or `"io"`.  Passing something that is not a string as a
 //! path is a bug and panics.
 
-use crate::builtins::{arg_str, lib, tpush};
+use crate::builtins::{apush, arg_str, lib};
 use crate::value::Value;
 use crate::vm::{rt_err, RtResult, Vm};
 use std::io::{self, Write};
@@ -105,10 +105,10 @@ fn lines(vm: &mut Vm, a: &[Value]) -> R {
         Ok(t) => t,
         Err(e) => return Ok(failure(vm, &path, &e)),
     };
-    let mut t = vm.new_table();
+    let mut t = vm.new_array(Vec::new());
     for line in text.lines() {
         let s = vm.new_string(line);
-        tpush(vm, &mut t, s);
+        apush(vm, &mut t, s);
     }
     Ok(vm.make_ok(Value::from(t)))
 }
@@ -153,10 +153,10 @@ fn list(vm: &mut Vm, a: &[Value]) -> R {
         }
     }
     names.sort();
-    let mut t = vm.new_table();
+    let mut t = vm.new_array(Vec::new());
     for n in names {
         let s = vm.new_string(n);
-        tpush(vm, &mut t, s);
+        apush(vm, &mut t, s);
     }
     Ok(vm.make_ok(Value::from(t)))
 }

@@ -26,7 +26,7 @@ log = [];
 print(steps(2), len(log));   // expect: Err("e2") 2
 
 // Option
-fn first(t) { option(t[0]) }
+fn first(t) { t:get(0) }
 fn first_doubled(t) { const v = first(t)?; Some(v * 2) }
 print(first_doubled([21]), first_doubled([]));   // expect: Some(42) None
 
@@ -82,7 +82,7 @@ print(capture(Ok(1)), saved());   // expect: Ok(10) 11
 struct Parser { pos }
 impl Parser {
     fn next(self, t) {
-        const v = option(t[self.pos])?;
+        const v = t:get(self.pos)?;
         self.pos += 1;
         Some(v)
     }

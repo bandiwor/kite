@@ -22,10 +22,11 @@ fn add(a, b) {
 const mul = |a, b| => a * b;
 ```
 
-* **Динамические типы**: `nil`, `bool`, `number` (f64), `string`, `table`, функции, `struct`.
+* **Динамические типы**: `nil`, `bool`, `number` (f64), `string`, `array`, `table`, функции, `struct`, `union`.
 * **Всё — выражение**: `if`, блоки, `loop`, `while`, `for` возвращают значения, `break value` выносит значение из цикла.
 * **Замыкания** с настоящим захватом переменных (upvalue), своя свежая переменная на каждую итерацию цикла.
-* **`table`** — хеш-таблица с массивной частью. Ключ — любое значение, кроме `nil` и `NaN`.
+* **`array`** — настоящий массив: позиции `0..len`, хранит любые значения (в том числе `nil`), доступ с проверкой границ.
+* **`table`** — хеш-таблица. Ключ — любое значение, кроме `nil` и `NaN`.
 * **Без ООП**: `struct` с фиксированными полями, `impl` добавляет обычные функции; особые имена (`new`, `destroy`,
   `add`, `eq`, `str`, …) VM использует как перегрузки операторов и жизненный цикл.
 * **NaN-boxing** (значение = 8 байт), **4-байтовые инструкции** (длинные — двойные), **сборщик мусора** mark & sweep с финализаторами (`destroy`).
@@ -136,13 +137,39 @@ fn counter() {
 Число аргументов проверяется строго. Хвостовые вызовы не растут по стеку (`return f(x)`).
 Рекурсия по имени работает и для `const f = |x| => … f(x-1)`.
 
+### Массивы
+
+```kite
+const a = [10, nil, 30];           // nil — обычный элемент: len(a) == 3
+push(a, 40, 50);  a:push(60);      // функция или метод; возвращают новую длину
+a[0] += 5;                         // читать и писать можно только существующие позиции
+a[9];  a[-1];  a[1.5];  a[3] = 0;  // паника: index out of bounds / must be a non-negative integer
+a:get(9);                          // None; a:get(0) — Some(15): проверяемый доступ возвращает Option
+pop(a);                            // Some(60) или None — nil может быть элементом, поэтому Option
+for v in a { … }   for i, v in a { … }
+print(map(a, |x, i| => x), array.new(3, 0), [1, 2, 3]:slice(1));
+```
+
+`[1, nil]` и `push(a, nil)` сохраняют `nil`; массив не растёт присваиванием (`a[len(a)] = v` — паника, используйте `push`) и никогда не
+превращается в хеш-таблицу. `==` сравнивает массивы по идентичности (как таблицы); `copy()` — поверхностная копия.
+
+| | |
+|---|---|
+| `push(a, v…)` `pop(a)` `insert(a, i, v)` `remove(a, i)` `clear(a)` | изменение (`i` для `insert` ≤ длины); `pop` → `Option`, `remove` → элемент |
+| `get(a, i)` `first(a)` `last(a)` `index_of(a, v)` `contains(a, v)` | проверяемый доступ и поиск → `Option` (`contains` → bool) |
+| `slice(a, from, to?)` `concat(a, b…)` `copy(a)` `extend(a, b)` `reverse(a)` `sort(a, less?)` | `slice/concat/copy` — новый массив; `extend/reverse/sort` — на месте, возвращают `a` |
+| `map filter reduce each(a, f)` | `f(x)` или `f(x, i)`; `map`/`filter` возвращают массив |
+| `join(a, sep?)` `keys(a)` `values(a)` `has(a, i)` `len(a)` | |
+| `array.new(n, fill?)` | массив из `n` копий |
+
+Все они есть и как обычные функции (`push(a, 1)`), и как методы (`a:push(1)`) — это одна и та же таблица `array`. `"a,b":split(",")`,
+`s:chars()`, `fs.list` и `fs.lines` возвращают массивы.
+
 ### Таблицы
 
 ```kite
 const t = { name: "kite", "two words": 2, [1 + 1]: "computed", 3: "x" };
-const a = [10, 20, 30];            // массив — таблица с ключами 0, 1, 2
 t.name = "KITE";  t["k"] = 1;  t.k += 1;
-a[3] = 40;  push(a, 50);
 t.name = nil;                      // присвоение nil удаляет ключ
 print(len(t), t.missing);          // отсутствующий ключ — nil
 ```
@@ -324,8 +351,9 @@ const r = catch_panic(|| => 1 + nil);   // Err(Error) с kind "panic": посл�
 |---|---|
 | ввод/вывод | `print(...)` (с переводом строки), `write(...)`, `input(prompt?)` |
 | типы | `type(x)`, `str(x)`, `num(x)` (nil, если не число; для ошибки с причиной — `parse_num`), `len(x)` |
-| таблицы | `push(t, v…)`, `pop(t)`, `insert(t, i, v)`, `remove(t, k)` (для массива сдвигает), `keys(t)`, `values(t)`, `has(t, k)` |
-| функциональные | `sort(t, less?)` (устойчивая), `map(t, f)`, `filter(t, f)`, `reduce(t, f, init?)`, `each(t, f)` — если у `f` два параметра, второй получает ключ |
+| массивы | см. «Массивы»: `push pop insert remove get first last slice concat extend reverse copy clear index_of contains join`, `array.new` |
+| таблицы | `remove(t, k)`, `keys(t)`, `values(t)`, `has(t, k)`, `len(t)` |
+| функциональные | `sort(a, less?)` (устойчивая), `map(c, f)`, `filter(c, f)`, `reduce(c, f, init?)`, `each(c, f)` для массивов и таблиц — если у `f` два параметра, второй получает индекс/ключ |
 | ошибки | `assert(c, msg?)`, `panic(msg)`, `catch_panic(f, args…)` → `Result`; `parse_num(s)` → `Result`, `option(x)` → `Option`; `Some Ok Err None Error` |
 | система | `clock()`, `time()`, `exit(code?)`, `gc()` (возвращает освобождённые байты), `mem()`, `destroy(x)` |
 | `math` | `floor ceil round trunc abs sqrt sin cos tan asin acos atan atan2 exp ln log2 log10 pow min max sign random seed`, `pi e huge` |
@@ -394,6 +422,7 @@ match fs.read("config.kite") {
 cargo test                               # юнит-тесты, tests/cases/*.kite (3 режима), примеры
 cargo build --release && python3 tools/fuzz.py 300 1     # дифференциальный фаззер
 python3 tools/fuzz_match.py 1000 1       # фаззер match: случайные значения × образцы против оракула
+python3 tools/fuzz_array.py 1000 1       # фаззер массивов: случайные операции против списков Python
 python3 tools/reduce.py SEED             # минимизатор упавшей программы
 tools/bench.sh                           # бенчмарки examples/bench
 cargo build --release --features op-profile   # частоты опкодов и их пар при выходе

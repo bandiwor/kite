@@ -136,6 +136,7 @@ impl Value {
         match self.obj_kind() {
             Some(Kind::Str) => "string",
             Some(Kind::Table) => "table",
+            Some(Kind::Array) => "array",
             Some(Kind::Closure) | Some(Kind::Native) | Some(Kind::Proto) | Some(Kind::Variant) => "function",
             Some(Kind::StructType) => {
                 if unsafe { self.as_gc_unchecked::<crate::object::StructType>() }.is_union() {

@@ -311,7 +311,7 @@ def kstmt(s):
     if k == "tnew":
         if s[2] is None:
             return f"var {s[1]} = {{}};"
-        return f"var {s[1]} = [{', '.join(kexpr(x) for x in s[2])}];"
+        return f"var {s[1]} = {{{', '.join(f'{i}: {kexpr(x)}' for i, x in enumerate(s[2]))}}};"
     if k == "qnew":
         return f"var {s[1]} = P({kexpr(s[2])}, {kexpr(s[3])});"
     if k == "tset":
@@ -322,7 +322,9 @@ def kstmt(s):
     if k == "tdel":
         return f"{s[1]}[({kexpr(s[2])} % 5)] = nil;"
     if k == "tpush":
-        return f"push({s[1]}, {kexpr(s[2])});"
+        # tables have no push: take the first free integer key
+        kk = "pk_" + s[1]
+        return f"do {{ const {kk}v = {kexpr(s[2])}; var {kk} = 0; while has({s[1]}, {kk}) {{ {kk} += 1; }} {s[1]}[{kk}] = {kk}v; }}"
     if k == "tsum":
         _, t, sv, kk, vv, with_key = s
         if with_key:

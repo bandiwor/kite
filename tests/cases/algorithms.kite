@@ -2,7 +2,7 @@
 
 // n-queens: number of solutions
 fn queens(n) {
-    const cols = [];
+    const cols = array.new(n, 0);
     var count = 0;
     fn safe(row, col) {
         for r in 0..row {

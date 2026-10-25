@@ -17,6 +17,8 @@ use std::rc::Rc;
 pub enum Kind {
     Str,
     Table,
+    /// Growable sequence of values (any value, `nil` included).
+    Array,
     Proto,
     Closure,
     Upvalue,
@@ -370,6 +372,31 @@ impl GcObj for Instance {
 
 impl GcObj for Table {
     const KIND: Kind = Kind::Table;
+    fn heap_size(&self) -> usize {
+        self.mem_size()
+    }
+}
+
+/// `[a, b, c]`: a plain growable sequence.  Unlike a `Table` it stores any value, `nil` included,
+/// is indexed by position only, and its indices are bounds-checked.
+#[repr(C)]
+pub struct Array {
+    pub hdr: Header,
+    pub items: Vec<Value>,
+}
+
+impl Array {
+    pub fn new(items: Vec<Value>) -> Array {
+        Array { hdr: Header::new(Kind::Array), items }
+    }
+
+    pub fn mem_size(&self) -> usize {
+        std::mem::size_of::<Array>() + self.items.capacity() * 8
+    }
+}
+
+impl GcObj for Array {
+    const KIND: Kind = Kind::Array;
     fn heap_size(&self) -> usize {
         self.mem_size()
     }
