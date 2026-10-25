@@ -47,6 +47,8 @@ pub fn install(vm: &mut Vm) {
     vm.define_native("reduce", -1, reduce);
     vm.define_native("each", 2, each);
 
+    crate::fslib::install(vm);
+
     let math = lib(
         vm,
         "math",
@@ -161,7 +163,7 @@ pub fn install(vm: &mut Vm) {
 
 // ---- registration helpers -----------------------------------------------------------------
 
-fn lib(vm: &mut Vm, name: &str, funcs: &[(&'static str, i8, NativeFn)]) -> Gc<Table> {
+pub(crate) fn lib(vm: &mut Vm, name: &str, funcs: &[(&'static str, i8, NativeFn)]) -> Gc<Table> {
     let mut t = vm.new_table();
     for &(fname, arity, f) in funcs {
         let n = vm.new_native(fname, arity, f);
@@ -187,7 +189,7 @@ fn arg_num(vm: &Vm, a: &[Value], i: usize, f: &str) -> RtResult<f64> {
     }
 }
 
-fn arg_str(vm: &Vm, a: &[Value], i: usize, f: &str) -> RtResult<Gc<Str>> {
+pub(crate) fn arg_str(vm: &Vm, a: &[Value], i: usize, f: &str) -> RtResult<Gc<Str>> {
     match a.get(i) {
         Some(v) => v
             .as_str()
@@ -219,7 +221,7 @@ fn str1(vm: &mut Vm, a: &[Value], f: &str, op: impl Fn(&str) -> String) -> R {
 }
 
 /// Append to a table's array part, keeping the GC's byte accounting honest.
-fn tpush(vm: &mut Vm, t: &mut Gc<Table>, v: Value) {
+pub(crate) fn tpush(vm: &mut Vm, t: &mut Gc<Table>, v: Value) {
     let before = t.mem_size();
     t.push(v);
     vm.heap.bytes += t.mem_size().saturating_sub(before);

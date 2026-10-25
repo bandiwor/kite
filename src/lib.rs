@@ -28,6 +28,7 @@ pub mod ast;
 pub mod builtins;
 pub mod compiler;
 pub mod disasm;
+pub mod fslib;
 pub mod hash;
 pub mod heap;
 pub mod intern;

@@ -329,7 +329,41 @@ const r = catch_panic(|| => 1 + nil);   // Err(Error) с kind "panic": посл�
 | ошибки | `assert(c, msg?)`, `panic(msg)`, `catch_panic(f, args…)` → `Result`; `parse_num(s)` → `Result`, `option(x)` → `Option`; `Some Ok Err None Error` |
 | система | `clock()`, `time()`, `exit(code?)`, `gc()` (возвращает освобождённые байты), `mem()`, `destroy(x)` |
 | `math` | `floor ceil round trunc abs sqrt sin cos tan asin acos atan atan2 exp ln log2 log10 pow min max sign random seed`, `pi e huge` |
+| `fs` | `read write append lines exists is_file is_dir size list mkdir remove remove_all rename copy cwd` и пути `join basename dirname stem ext`; см. ниже |
 | `string` | `len upper lower trim reverse sub find contains starts_with ends_with split join replace rep chars byte char format`; методы вызываются как `s:upper()` |
+
+### Файлы: `fs`
+
+Операции над файлами целиком (без дескрипторов); всё, что может не получиться из-за внешнего мира, возвращает `Result`,
+а `Err(Error)` несёт `kind`: `"not_found"`, `"permission"`, `"exists"`, `"utf8"` (файл не текст) или `"io"`. Сообщение содержит путь.
+Передать не строку вместо пути — баг, то есть паника.
+
+```kite
+fs.write("notes.txt", "one\ntwo\n")?;           // Ok(nil)
+const text = fs.read("notes.txt")?;              // Ok("one\ntwo\n")
+for line in fs.lines("notes.txt")? { print(line); }   // без символов конца строки
+fs.append("log.txt", "started\n")?;              // создаёт файл, если его нет
+
+match fs.read("config.kite") {
+    Ok(src) => run(src),
+    Err(e) if e.kind == "not_found" => use_defaults(),     // "config.kite: no such file or directory"
+    Err(e) => panic(e),
+}
+```
+
+| | |
+|---|---|
+| `read(p)` `lines(p)` `size(p)` | `Ok(текст)` / `Ok([строки])` / `Ok(байты)` |
+| `write(p, s)` `append(p, s)` | `Ok(nil)`; `write` создаёт или обрезает файл |
+| `list(dir)` | `Ok([имена])`, отсортированные |
+| `mkdir(p)` | создаёт и промежуточные папки; уже существующая — не ошибка |
+| `remove(p)` `remove_all(p)` | файл или пустая папка / файл или дерево целиком |
+| `rename(a, b)` `copy(a, b)` | `Ok(nil)` |
+| `exists(p)` `is_file(p)` `is_dir(p)` | `bool` (без `Result`: ошибки доступа читаются как «нет») |
+| `cwd()` | `Ok(путь)` |
+| `join(a, b, …)` `basename` `dirname` `stem` `ext` | работа со строками-путями без обращения к диску; `ext("Makefile")` → `nil` |
+
+Пример целиком — `examples/files.kite` (CSV → разбор с `?` → отчёт → список папки → уборка).
 
 Индексы строк — в символах Unicode (`s[0]`, `s:sub(1, -1)`, отрицательные считаются с конца).
 `string.format("{} {:.2} {:>8} {:<8}", …)`.

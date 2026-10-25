@@ -1,0 +1,64 @@
+// the fs library: every operation that can fail returns a Result
+const dir = fs.join("target", "fs_lib_test");
+fs.remove_all(dir);   // leftovers of an aborted run (ignored if it does not exist)
+print(fs.exists(dir), fs.mkdir(dir), fs.is_dir(dir), fs.is_file(dir));   // expect: false Ok(nil) true false
+print(fs.mkdir(dir));   // expect: Ok(nil)
+
+// write / read / append
+const f = fs.join(dir, "a.txt");
+print(fs.write(f, "hello\nwörld\n"), fs.exists(f), fs.is_file(f));   // expect: Ok(nil) true true
+print(fs.read(f), fs.size(f));   // expect: Ok("hello\nwörld\n") Ok(13)
+print(fs.append(f, "third"), fs.read(f):unwrap():upper() == "HELLO\nWÖRLD\nTHIRD");   // expect: Ok(nil) true
+print(fs.lines(f));   // expect: Ok(["hello", "wörld", "third"])
+print(fs.append(fs.join(dir, "new.txt"), "x"), fs.read(fs.join(dir, "new.txt")));   // expect: Ok(nil) Ok("x")
+print(fs.write(f, ""), fs.read(f), fs.lines(f));   // expect: Ok(nil) Ok("") Ok([])
+fs.write(f, "a\r\nb\n\nc");
+print(fs.lines(f));   // expect: Ok(["a", "b", "", "c"])
+
+// directories
+fs.mkdir(fs.join(dir, "sub", "deep"));
+fs.write(fs.join(dir, "sub", "z.txt"), "z");
+print(fs.list(dir));   // expect: Ok(["a.txt", "new.txt", "sub"])
+print(fs.list(fs.join(dir, "sub")));   // expect: Ok(["deep", "z.txt"])
+
+// copy / rename / remove
+print(fs.copy(f, fs.join(dir, "b.txt")), fs.read(fs.join(dir, "b.txt")):unwrap() == fs.read(f):unwrap());   // expect: Ok(nil) true
+print(fs.rename(fs.join(dir, "b.txt"), fs.join(dir, "c.txt")), fs.exists(fs.join(dir, "b.txt")), fs.exists(fs.join(dir, "c.txt")));   // expect: Ok(nil) false true
+print(fs.remove(fs.join(dir, "c.txt")), fs.exists(fs.join(dir, "c.txt")));   // expect: Ok(nil) false
+print(fs.remove(fs.join(dir, "sub", "deep")), fs.list(fs.join(dir, "sub")));   // expect: Ok(nil) Ok(["z.txt"])
+print(fs.remove(fs.join(dir, "sub")):is_err());   // expect: true
+print(fs.remove_all(fs.join(dir, "sub")), fs.exists(fs.join(dir, "sub")));   // expect: Ok(nil) false
+
+// failures are Err(Error) values with a kind to match on
+const missing = fs.join(dir, "nope.txt");
+const r = fs.read(missing);
+print(r:is_err(), r:unwrap_err().kind, r:unwrap_err());   // expect: true not_found target/fs_lib_test/nope.txt: no such file or directory
+print(fs.size(missing):unwrap_err().kind, fs.list(missing):unwrap_err().kind, fs.lines(missing):unwrap_err().kind);   // expect: not_found not_found not_found
+print(fs.remove(missing):unwrap_err().kind, fs.rename(missing, f):unwrap_err().kind, fs.copy(missing, f):unwrap_err().kind);   // expect: not_found not_found not_found
+print(fs.write(fs.join(missing, "x"), "1"):unwrap_err().kind);   // expect: not_found
+print(match fs.read(missing) { Ok(_) => "read", Err(e) if e.kind == "not_found" => "creating " + fs.basename(missing), Err(e) => "fatal " + e });   // expect: creating nope.txt
+fs.write(fs.join(dir, "bin"), "ok");
+print(fs.read(dir):is_err(), fs.mkdir(fs.join(dir, "bin")):is_err());   // expect: true true
+
+// `?` makes a chain of file operations short
+fn copy_upper(from, to) {
+    const text = fs.read(from)?;
+    fs.write(to, text:upper())?;
+    Ok(len(text))
+}
+print(copy_upper(f, fs.join(dir, "up.txt")), fs.read(fs.join(dir, "up.txt")));   // expect: Ok(7) Ok("A\r\nB\n\nC")
+print(copy_upper(missing, fs.join(dir, "no.txt")):is_err(), fs.exists(fs.join(dir, "no.txt")));   // expect: true false
+
+// path helpers never touch the disk
+print(fs.join("a", "b", "c.txt"), fs.join("a/", "b"), fs.join("a", "/abs"), fs.join("only"));   // expect: a/b/c.txt a/b /abs only
+print(fs.basename("a/b/c.tar.gz"), fs.stem("a/b/c.tar.gz"), fs.ext("a/b/c.tar.gz"), fs.dirname("a/b/c.tar.gz"));   // expect: c.tar.gz c.tar gz a/b
+print(fs.ext("Makefile"), fs.basename("a/b/"), fs.dirname("c.txt") == "", fs.dirname("/"), fs.ext(".bashrc"));   // expect: nil b true  nil
+print(type(fs.cwd():unwrap()), len(fs.cwd():unwrap()) > 0);   // expect: string true
+
+// mistakes are panics, not Errs
+print(catch_panic(|| => fs.read(5)):unwrap_err().message);   // expect: fs.read: argument 1 must be a string, got number
+print(catch_panic(|| => fs.write("x")):unwrap_err().message);   // expect: function 'write' expects 2 arguments but got 1
+print(catch_panic(|| => fs.join()):unwrap_err().message);   // expect: fs.join: missing argument 1
+
+fs.remove_all(dir);
+print(fs.exists(dir));   // expect: false

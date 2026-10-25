@@ -1,0 +1,59 @@
+// Working with files: every fallible fs call returns a Result, so `?` keeps the happy path short.
+const dir = "kite_example_tmp";
+fs.remove_all(dir);
+fs.mkdir(dir):expect("cannot create the work directory");
+
+// 1. write a small CSV
+const csv = fs.join(dir, "scores.csv");
+fs.write(csv, "name,score\nada,91\nlinus,78\ngrace,x\nken,85\n"):unwrap();
+
+// 2. read and parse it; the first bad row stops the function with an Err
+fn load_scores(path) {
+    const rows = fs.lines(path)?;
+    var scores = [];
+    for i in 1..len(rows) {                       // skip the header
+        const cells = rows[i]:split(",");
+        const score = parse_num(cells[1]):map_err(|e| => Error("line " + (i + 1) + ": " + e):with_kind("parse"))?;
+        push(scores, { name: cells[0], score });
+    }
+    Ok(scores)
+}
+
+match load_scores(csv) {
+    Ok(scores) => print("loaded", len(scores)),
+    Err(e) => print("could not load:", e, "[" + e.kind + "]"),
+}
+
+// 3. fix the file and try again
+fs.write(csv, "name,score\nada,91\nlinus,78\ngrace,99\nken,85\n"):unwrap();
+const scores = load_scores(csv):unwrap();
+var best = scores[0];
+var total = 0;
+for s in scores {
+    total += s.score;
+    if s.score > best.score { best = s; }
+}
+print("best:", best.name, best.score, "average:", total / len(scores));
+
+// 4. a report, then a log that grows
+const report = fs.join(dir, "report.txt");
+fs.write(report, "best: " + best.name + "\n"):unwrap();
+for s in scores { fs.append(report, s.name + " " + s.score + "\n"):unwrap(); }
+for line in fs.lines(report):unwrap() { print("|", line); }
+fs.append(fs.join(dir, "log.txt"), "report written\n"):unwrap();
+
+// 5. look around
+for name in fs.list(dir):unwrap() {
+    const path = fs.join(dir, name);
+    print(name, fs.size(path):unwrap(), "bytes", if fs.ext(path) == "csv" { "(csv)" } else { "" });
+}
+
+// 6. a missing file is an ordinary value to handle
+match fs.read(fs.join(dir, "missing.txt")) {
+    Ok(text) => print(text),
+    Err(e) if e.kind == "not_found" => print("no such file, as expected:", e),
+    Err(e) => panic(e),
+}
+
+fs.remove_all(dir):unwrap();
+print("cleaned up:", !fs.exists(dir));
