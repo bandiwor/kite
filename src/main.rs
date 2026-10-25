@@ -2,6 +2,10 @@ use kite::{repl, Options, Vm};
 use std::io::Read;
 use std::process::ExitCode;
 
+#[cfg(not(feature = "system-alloc"))]
+#[global_allocator]
+static ALLOC: kite::pool::PoolAlloc = kite::pool::PoolAlloc;
+
 const USAGE: &str = "\
 Kite — a small, fast, dynamically typed language
 

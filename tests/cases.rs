@@ -129,3 +129,48 @@ fn all_cases() {
         panic!("{} failure(s):\n\n{}", failures.len(), failures.join("\n"));
     }
 }
+
+/// The `kite` binary uses the small-object pool allocator (the library tests above run with the
+/// system allocator), so run every case through the real executable too, normally and with a
+/// collection at every safe point.
+#[test]
+fn all_cases_through_the_binary() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files: Vec<PathBuf> = std::fs::read_dir(root.join("tests/cases"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "kite"))
+        .collect();
+    files.sort();
+    let mut failures = Vec::new();
+    for f in &files {
+        let src = std::fs::read_to_string(f).unwrap();
+        let (expected, expected_err) = expectations(&src);
+        for flags in [&[][..], &["--gc-stress"][..]] {
+            let out = std::process::Command::new(env!("CARGO_BIN_EXE_kite"))
+                .args(flags)
+                .arg(f)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            let label = format!("{} [binary {}]", f.file_name().unwrap().to_string_lossy(), flags.join(" "));
+            match &expected_err {
+                Some(want) => {
+                    if out.status.success() || !stderr.contains(want.as_str()) {
+                        failures.push(format!("{}: expected failure with {:?}, got {:?}", label, want, stderr));
+                    }
+                }
+                None => {
+                    let actual: Vec<&str> = stdout.lines().collect();
+                    let want: Vec<&str> = expected.iter().map(|s| s.as_str()).collect();
+                    if !out.status.success() || actual != want {
+                        failures.push(format!("{}: status {:?}\nstderr: {}", label, out.status.code(), stderr));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{} failure(s):\n{}", failures.len(), failures.join("\n"));
+}

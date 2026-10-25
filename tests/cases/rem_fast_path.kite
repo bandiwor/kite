@@ -1,0 +1,16 @@
+// `%` has a 32-bit integer fast path; every case outside it must keep C fmod semantics
+print(7 % 3, 7 % 7, 6 % 7, 0 % 5, 1 % 1);   // expect: 1 0 6 0 0
+print(-7 % 3, 7 % -3, -7 % -3, -6 % 3);   // expect: -1 1 -1 0
+print(5.5 % 2, -5.5 % 2, 5.5 % -2, 0.5 % 0.2, 1e15 % 7, 1e16 % 7);   // expect: 1.5 -1.5 1.5 0.09999999999999998 6 4
+print(4294967295 % 10, 4294967296 % 10, 4294967297 % 4294967296, 2 ** 40 % 1000, 2 ** 53 % 10);   // expect: 5 6 1 776 2
+print(10 % 4294967296, 10 % 4294967295, 4294967295 % 4294967295, 4294967294 % 4294967295);   // expect: 10 10 0 4294967294
+print(10 % 0 != 10 % 0, 0 % 0 != 0 % 0, 1 / (-1 % 1), 1 / (0 % 5));   // expect: true true -inf inf
+print(1 / 0 % 5 != 1 / 0 % 5, 5 % (1 / 0), -5 % (1 / 0), (0 / 0) % 3 != (0 / 0) % 3);   // expect: true 5 -5 true
+// variables, constants and loop counters take the same paths
+var s = 0;
+for i in 0..100 { s += i % 7 + (i - 50) % 7; }
+print(s);   // expect: 294
+var big = 4294967290;
+var acc = 0;
+for i in 0..20 { acc += (big + i) % 13; }
+print(acc);   // expect: 120

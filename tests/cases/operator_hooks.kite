@@ -1,0 +1,103 @@
+// operator overloads written in Kite run as ordinary calls inside the interpreter loop;
+// every instruction form that can reach a hook has to behave the same
+struct V { x }
+impl V {
+    fn new(self, x) { self.x = x; }
+    fn add(a, b) { V(val(a) + val(b)) }
+    fn sub(a, b) { V(val(a) - val(b)) }
+    fn mul(a, b) { V(val(a) * val(b)) }
+    fn div(a, b) { V(val(a) / val(b)) }
+    fn rem(a, b) { V(val(a) % val(b)) }
+    fn pow(a, b) { V(val(a) ** val(b)) }
+    fn str(a) { "V" + a.x }
+}
+fn val(v) { if type(v) == "V" { v.x } else { v } }
+
+// every operator, hook on the left, on the right, on both
+const a = V(7);
+const b = V(2);
+print(a + b, a - b, a * b, a / b, a % b, a ** b);   // expect: V9 V5 V14 V3.5 V1 V49
+print(a + 1, 10 - a, 3 * a, a / 2, 9 % b, 2 ** b);   // expect: V8 V3 V21 V3.5 V1 V4
+
+// the fused statement forms: local = local <op> local, stack operands, local += constant
+fn forms() {
+    var s = V(1);
+    const one = V(1);
+    const two = V(2);
+    s = s + one;
+    s = s + two;
+    print(s);   // expect: V4
+    s = s - one;
+    s = s * two;
+    print(s);   // expect: V6
+    var t = one + two + one;
+    t = (s + one) * two;
+    print(t);   // expect: V14
+    var u = V(5);
+    u += 3;
+    u -= V(1);
+    u *= 2;
+    print(u);   // expect: V14
+    var n = 0;
+    for i in 0..5 { n = n + i; }
+    print(n);   // expect: 10
+    return s;
+}
+print(forms());   // expect: V6
+
+// hooks may themselves use hooks, recurse, tail call, and capture variables
+struct Poly { c }
+impl Poly {
+    fn add(p, q) { return Poly(p.c + q.c); }
+    fn mul(p, k) { if k == 0 { Poly(0) } else { p + p * (k - 1) } }
+}
+print((Poly(3) * 4).c);   // expect: 12
+const log = [];
+struct Logged { n }
+impl Logged {
+    fn add(a, b) { log:push(a.n + "+" + b.n); Logged(a.n + b.n) }
+}
+var total = Logged(0);
+for i in 1..4 { total = total + Logged(i); }
+print(total.n, log);   // expect: 6 ["0+1", "1+2", "3+3"]
+
+// a hook may return anything, including nil
+struct Odd { v }
+impl Odd { fn add(a, b) { nil } fn sub(a, b) { [a.v, b] } fn mul(a, b) { "text" } }
+var o = Odd(1);
+var r = o + o;
+print(r, o - 5, o * 2);   // expect: nil [1, 5] text
+r = o + 1;
+print(r);   // expect: nil
+
+// errors inside a hook carry the hook's frame in the trace and leave the VM usable
+struct Bad { }
+impl Bad { fn add(a, b) { panic("bad add") } fn sub(a, b) { a.missing } }
+print(catch_panic(|| => Bad() + Bad()));   // expect: Err(bad add)
+print(catch_panic(|| => Bad() - 1):is_err());   // expect: true
+var bd = Bad();
+print(catch_panic(|| => { bd = bd + bd; }));   // expect: Err(bad add)
+print(1 + 1);   // expect: 2
+
+// wrong arity of the hook is an error, not a crash
+struct One { }
+impl One { fn add(a) { a } }
+print(catch_panic(|| => One() + One()):is_err());   // expect: true
+
+// the fused store forms never leak a half-finished stack
+fn churn() {
+    var x = V(0);
+    const d = V(1);
+    for i in 0..2000 { x = x + d; x = d + x; }
+    return x;
+}
+print(churn());   // expect: V4000
+
+// numbers, strings and the str hook are untouched
+var k = 5;
+k = k + 1;
+k = k * 2;
+var str_ = "a";
+str_ = str_ + "b";
+str_ = str_ + 1;
+print(k, str_, "v=" + V(3), V(3) + "!");   // expect: 12 ab1 v=V3 V3!

@@ -74,3 +74,16 @@ print([1, 2, 3, 4]:reduce(|a, b| => a + b, 0), [5, 6]:reduce(|a, b| => a * b)); 
 print([3, 1, 2]:sort(), ["b", "a"]:sort(), [3, 1, 2]:sort(|a, b| => a > b));   // expect: [1, 2, 3] ["a", "b"] [3, 2, 1]
 [7, 8]:each(|v, i| => write(i, ":", v, " "));
 print();   // expect: 0:7 1:8 
+
+// string keys are looked up by content, whichever way the string was built (hashes are computed lazily)
+const sk = {};
+const half = "a";
+sk["ab"] = 1;
+sk[half + "b"] += 10;
+sk["x" + "y"] = 2;
+const long1 = string.rep("long-key-", 500);
+const long2 = string.rep("long-key-", 250) + string.rep("long-key-", 250);
+sk[long1] = "long";
+print(sk["ab"], sk["xy"], sk[long2], sk[long1 + "!"], sk:len());   // expect: 11 2 long nil 3
+sk[""] = "empty";
+print(sk["" + ""], sk[half + ""] , sk:has("a"), sk:has(""));   // expect: empty nil false true

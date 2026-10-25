@@ -2,7 +2,7 @@
 //! mark & sweep phases.  *Which* objects are roots is decided by the VM
 //! (`Vm::collect_garbage`); this module only knows how to trace and free.
 
-use crate::hash::{hash_bytes, FxHashMap};
+use crate::hash::FxHashMap;
 use crate::object::*;
 use crate::table::Table;
 use crate::value::Value;
@@ -60,9 +60,7 @@ impl Heap {
 
     /// A fresh (non-interned) string.
     pub fn new_str(&mut self, s: impl Into<Box<str>>) -> Gc<Str> {
-        let data: Box<str> = s.into();
-        let hash = hash_bytes(data.as_bytes());
-        self.alloc(Str { hdr: Header::new(Kind::Str), hash, interned: false, data })
+        self.alloc(Str::new(s.into(), false))
     }
 
     /// The unique string with this content.  Used for constants, field names
@@ -71,9 +69,7 @@ impl Heap {
         if let Some(&g) = self.strings.get(s) {
             return g;
         }
-        let data: Box<str> = s.into();
-        let hash = hash_bytes(data.as_bytes());
-        let g = self.alloc(Str { hdr: Header::new(Kind::Str), hash, interned: true, data });
+        let g = self.alloc(Str::new(s.into(), true));
         // The key borrows the string's own heap buffer, which lives (at a
         // stable address) exactly as long as the object; the entry is removed
         // in `sweep` before the object is freed.

@@ -259,10 +259,14 @@ impl Vm {
     }
 
     /// Push onto an array, keeping the GC's byte accounting honest.
+    #[inline]
     pub fn array_push(&mut self, arr: &mut Gc<Array>, v: Value) {
-        let before = arr.mem_size();
+        let before = arr.items.capacity();
         arr.items.push(v);
-        self.heap.bytes += arr.mem_size().saturating_sub(before);
+        let after = arr.items.capacity();
+        if after != before {
+            self.heap.bytes += (after - before) * std::mem::size_of::<Value>();
+        }
     }
 
     /// Temporarily keep `v` alive across calls back into the VM (natives
@@ -864,9 +868,23 @@ impl Vm {
         self.instance_hook(a, h).or_else(|| self.instance_hook(b, h))
     }
 
+    /// An operator hook implemented by a bytecode function of two parameters.  The interpreter
+    /// loop runs those as ordinary calls (no nested `run`), which makes overloaded operators
+    /// about as cheap as function calls.
+    fn arith_hook_closure(&self, op: Arith, a: Value, b: Value) -> Option<Gc<Closure>> {
+        if a.is_num() && b.is_num() || (op == Arith::Add && (a.is_str() || b.is_str())) {
+            return None;
+        }
+        let f = self.binary_hook(op.hook()?, a, b)?;
+        let cl = f.as_gc::<Closure>()?;
+        (cl.proto.arity == 2).then_some(cl)
+    }
+
     fn arith_slow(&mut self, op: Arith, a: Value, b: Value) -> RtResult<Value> {
         if op == Arith::Add && (a.is_str() || b.is_str()) {
-            let mut s = String::new();
+            // exact capacity for string operands (numbers etc. need a few bytes): one allocation, one copy
+            let size = |v: Value| v.as_str().map_or(24, |s| s.as_str().len());
+            let mut s = String::with_capacity(size(a) + size(b));
             self.write_value(a, &mut s, false, 0)?;
             self.write_value(b, &mut s, false, 0)?;
             return Ok(self.new_string(s));
@@ -1607,6 +1625,14 @@ impl Vm {
                         let ($a, $b) = ($a.as_num(), $b.as_num());
                         sp = sp.sub(1);
                         *sp.sub(1) = Value::num($fast);
+                    } else if let Some(cl) = self.arith_hook_closure($kind, $a, $b) {
+                        // [a, b] -> [hook, a, b]; the hook's result takes the place of all three
+                        *sp = $b;
+                        *sp.sub(1) = $a;
+                        *sp.sub(2) = Value::from(cl);
+                        sp = sp.add(1);
+                        sync!();
+                        enter_closure!(cl, 2);
                     } else {
                         let r = protect!(self.arith_slow($kind, $a, $b));
                         sp = sp.sub(1);
@@ -1622,6 +1648,14 @@ impl Vm {
                     if $a.is_num() {
                         let ($a, $b) = ($a.as_num(), kv.as_num());
                         *sp.sub(1) = Value::num($fast);
+                    } else if let Some(cl) = self.arith_hook_closure($kind, $a, kv) {
+                        // [a] -> [hook, a, k]
+                        *sp = $a;
+                        *sp.sub(1) = Value::from(cl);
+                        *sp.add(1) = kv;
+                        sp = sp.add(2);
+                        sync!();
+                        enter_closure!(cl, 2);
                     } else {
                         let r = protect!(self.arith_slow($kind, $a, kv));
                         *sp.sub(1) = r;
@@ -1637,6 +1671,13 @@ impl Vm {
                         let ($a, $b) = ($a.as_num() as i64, $b.as_num() as i64);
                         sp = sp.sub(1);
                         *sp.sub(1) = Value::num(($fast) as f64);
+                    } else if let Some(cl) = self.arith_hook_closure($kind, $a, $b) {
+                        *sp = $b;
+                        *sp.sub(1) = $a;
+                        *sp.sub(2) = Value::from(cl);
+                        sp = sp.add(1);
+                        sync!();
+                        enter_closure!(cl, 2);
                     } else {
                         let r = protect!(self.arith_slow($kind, $a, $b));
                         sp = sp.sub(1);
@@ -1739,6 +1780,18 @@ impl Vm {
                     let callee = *sp.sub(argc + 1);
                     if callee.is_kind(Kind::Closure) {
                         enter_closure!(callee.as_gc_unchecked::<Closure>(), argc);
+                    } else if callee.is_kind(Kind::Native)
+                        && (callee.as_gc_unchecked::<Native>().arity < 0
+                            || callee.as_gc_unchecked::<Native>().arity as usize == argc)
+                    {
+                        // a native with a matching arity: call it straight from the loop
+                        let nat = callee.as_gc_unchecked::<Native>();
+                        let args = std::slice::from_raw_parts(sp.sub(argc), argc);
+                        let r = (nat.func)(self, args)?;
+                        sp = sp.sub(argc);
+                        *sp.sub(1) = r;
+                        self.sp = sp;
+                        gc_check!();
                     } else {
                         match self.call_value_at(argc) {
                             Ok(true) => {
@@ -1805,10 +1858,138 @@ impl Vm {
                         push!(*base.add(a as usize));
                         push!(*base.add(b as usize));
                     }
+                    // `x = a <op> b` fused with its store.  The word after these ops is the plain
+                    // `StoreLocal(d)`: the numeric fast path stores directly and skips it; the
+                    // operator-hook path pushes the hook's result and falls into it.
+                    Op::AddLLS(a, b, d) => {
+                        let (x, y) = (*base.add(a as usize), *base.add(b as usize));
+                        if x.is_num() && y.is_num() {
+                            *base.add(d as usize) = Value::num(x.as_num() + y.as_num());
+                            ip = ip.add(1);
+                        } else if let Some(cl) = self.arith_hook_closure(Arith::Add, x, y) {
+                            *sp = Value::from(cl);
+                            *sp.add(1) = x;
+                            *sp.add(2) = y;
+                            sp = sp.add(3);
+                            sync!();
+                            enter_closure!(cl, 2);
+                        } else {
+                            let r = protect!(self.arith_slow(Arith::Add, x, y));
+                            push!(r);
+                            gc_check!();
+                        }
+                    }
+                    Op::SubLLS(a, b, d) => {
+                        let (x, y) = (*base.add(a as usize), *base.add(b as usize));
+                        if x.is_num() && y.is_num() {
+                            *base.add(d as usize) = Value::num(x.as_num() - y.as_num());
+                            ip = ip.add(1);
+                        } else if let Some(cl) = self.arith_hook_closure(Arith::Sub, x, y) {
+                            *sp = Value::from(cl);
+                            *sp.add(1) = x;
+                            *sp.add(2) = y;
+                            sp = sp.add(3);
+                            sync!();
+                            enter_closure!(cl, 2);
+                        } else {
+                            let r = protect!(self.arith_slow(Arith::Sub, x, y));
+                            push!(r);
+                            gc_check!();
+                        }
+                    }
+                    Op::MulLLS(a, b, d) => {
+                        let (x, y) = (*base.add(a as usize), *base.add(b as usize));
+                        if x.is_num() && y.is_num() {
+                            *base.add(d as usize) = Value::num(x.as_num() * y.as_num());
+                            ip = ip.add(1);
+                        } else if let Some(cl) = self.arith_hook_closure(Arith::Mul, x, y) {
+                            *sp = Value::from(cl);
+                            *sp.add(1) = x;
+                            *sp.add(2) = y;
+                            sp = sp.add(3);
+                            sync!();
+                            enter_closure!(cl, 2);
+                        } else {
+                            let r = protect!(self.arith_slow(Arith::Mul, x, y));
+                            push!(r);
+                            gc_check!();
+                        }
+                    }
+                    Op::AddS(d) => {
+                        let (x, y) = (peek!(1), peek!(0));
+                        if x.is_num() && y.is_num() {
+                            sp = sp.sub(2);
+                            *base.add(d as usize) = Value::num(x.as_num() + y.as_num());
+                            ip = ip.add(1);
+                        } else if let Some(cl) = self.arith_hook_closure(Arith::Add, x, y) {
+                            // [a, b] -> [hook, a, b]
+                            *sp = y;
+                            *sp.sub(1) = x;
+                            *sp.sub(2) = Value::from(cl);
+                            sp = sp.add(1);
+                            sync!();
+                            enter_closure!(cl, 2);
+                        } else {
+                            let r = protect!(self.arith_slow(Arith::Add, x, y));
+                            sp = sp.sub(1);
+                            *sp.sub(1) = r;
+                            gc_check!();
+                        }
+                    }
+                    Op::SubS(d) => {
+                        let (x, y) = (peek!(1), peek!(0));
+                        if x.is_num() && y.is_num() {
+                            sp = sp.sub(2);
+                            *base.add(d as usize) = Value::num(x.as_num() - y.as_num());
+                            ip = ip.add(1);
+                        } else if let Some(cl) = self.arith_hook_closure(Arith::Sub, x, y) {
+                            // [a, b] -> [hook, a, b]
+                            *sp = y;
+                            *sp.sub(1) = x;
+                            *sp.sub(2) = Value::from(cl);
+                            sp = sp.add(1);
+                            sync!();
+                            enter_closure!(cl, 2);
+                        } else {
+                            let r = protect!(self.arith_slow(Arith::Sub, x, y));
+                            sp = sp.sub(1);
+                            *sp.sub(1) = r;
+                            gc_check!();
+                        }
+                    }
+                    Op::MulS(d) => {
+                        let (x, y) = (peek!(1), peek!(0));
+                        if x.is_num() && y.is_num() {
+                            sp = sp.sub(2);
+                            *base.add(d as usize) = Value::num(x.as_num() * y.as_num());
+                            ip = ip.add(1);
+                        } else if let Some(cl) = self.arith_hook_closure(Arith::Mul, x, y) {
+                            // [a, b] -> [hook, a, b]
+                            *sp = y;
+                            *sp.sub(1) = x;
+                            *sp.sub(2) = Value::from(cl);
+                            sp = sp.add(1);
+                            sync!();
+                            enter_closure!(cl, 2);
+                        } else {
+                            let r = protect!(self.arith_slow(Arith::Mul, x, y));
+                            sp = sp.sub(1);
+                            *sp.sub(1) = r;
+                            gc_check!();
+                        }
+                    }
                     Op::AddLL(a, b) => {
                         let (x, y) = (*base.add(a as usize), *base.add(b as usize));
                         if x.is_num() && y.is_num() {
                             push!(Value::num(x.as_num() + y.as_num()));
+                        } else if let Some(cl) = self.arith_hook_closure(Arith::Add, x, y) {
+                            // operator hook written in Kite: run it as a call, no nested interpreter
+                            *sp = Value::from(cl);
+                            *sp.add(1) = x;
+                            *sp.add(2) = y;
+                            sp = sp.add(3);
+                            sync!();
+                            enter_closure!(cl, 2);
                         } else {
                             let r = protect!(self.arith_slow(Arith::Add, x, y));
                             push!(r);
@@ -1819,6 +2000,14 @@ impl Vm {
                         let (x, y) = (*base.add(a as usize), *base.add(b as usize));
                         if x.is_num() && y.is_num() {
                             push!(Value::num(x.as_num() - y.as_num()));
+                        } else if let Some(cl) = self.arith_hook_closure(Arith::Sub, x, y) {
+                            // operator hook written in Kite: run it as a call, no nested interpreter
+                            *sp = Value::from(cl);
+                            *sp.add(1) = x;
+                            *sp.add(2) = y;
+                            sp = sp.add(3);
+                            sync!();
+                            enter_closure!(cl, 2);
                         } else {
                             let r = protect!(self.arith_slow(Arith::Sub, x, y));
                             push!(r);
@@ -1828,6 +2017,14 @@ impl Vm {
                         let (x, y) = (*base.add(a as usize), *base.add(b as usize));
                         if x.is_num() && y.is_num() {
                             push!(Value::num(x.as_num() * y.as_num()));
+                        } else if let Some(cl) = self.arith_hook_closure(Arith::Mul, x, y) {
+                            // operator hook written in Kite: run it as a call, no nested interpreter
+                            *sp = Value::from(cl);
+                            *sp.add(1) = x;
+                            *sp.add(2) = y;
+                            sp = sp.add(3);
+                            sync!();
+                            enter_closure!(cl, 2);
                         } else {
                             let r = protect!(self.arith_slow(Arith::Mul, x, y));
                             push!(r);
@@ -2083,9 +2280,7 @@ impl Vm {
                     Op::Append => {
                         let v = pop!();
                         let mut a = top!().as_gc_unchecked::<Array>();
-                        let before = a.mem_size();
-                        a.items.push(v);
-                        self.heap.bytes += a.mem_size().saturating_sub(before);
+                        self.array_push(&mut a, v);
                     }
                     Op::InitField(_) => {
                         let v = pop!();
@@ -2335,9 +2530,12 @@ impl Vm {
 fn array_slot(arr: &Array, key: Value) -> Option<usize> {
     if key.is_num() {
         let n = key.as_num();
-        let i = n as usize;
-        if i as f64 == n && i < arr.items.len() {
-            return Some(i);
+        // the range check also rejects NaN, so the unchecked (single instruction) conversion is sound
+        if n >= 0.0 && n < (arr.items.len() as i64) as f64 {
+            let i = unsafe { n.to_int_unchecked::<usize>() };
+            if i as f64 == n {
+                return Some(i);
+            }
         }
     }
     None
@@ -2366,9 +2564,21 @@ fn arith_num(op: Arith, a: f64, b: f64) -> f64 {
 }
 
 /// `a % b` with C `fmod` semantics.  `fmod` is slow, so integral operands
-/// (the overwhelmingly common case) take an integer path.
+/// (the overwhelmingly common case) take an integer path: first a 32-bit unsigned
+/// one (cheap division, covers loop counters and array indices), then a 64-bit signed one.
 #[inline(always)]
 pub fn rem_f64(a: f64, b: f64) -> f64 {
+    // `as u32` saturates and maps NaN/negatives to 0, so the round-trip check rejects them;
+    // `au != 0` keeps the zero (and `-0.0`) cases on the slow path where signs are handled
+    let (au, bu) = (a as u32, b as u32);
+    if au != 0 && au as f64 == a && bu as f64 == b && bu != 0 {
+        return (au % bu) as f64;
+    }
+    rem_f64_slow(a, b)
+}
+
+#[inline(never)]
+fn rem_f64_slow(a: f64, b: f64) -> f64 {
     if a.abs() < 9.0e15 && b.abs() < 9.0e15 {
         let (ai, bi) = (a as i64, b as i64);
         if ai as f64 == a && bi as f64 == b && bi != 0 {

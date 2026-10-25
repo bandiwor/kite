@@ -110,6 +110,17 @@ pub enum Op {
     AddLL(u8, u8),
     SubLL(u8, u8),
     MulLL(u8, u8),
+    /// `AddLL; StoreLocal(d)` in one dispatch (slots below 256).  Always followed by the
+    /// `StoreLocal(d)` word: when both operands are numbers the op stores `local[a] + local[b]`
+    /// into `d` itself and skips that word, otherwise it behaves exactly like `AddLL` and
+    /// execution continues in `StoreLocal`.  (Operator hooks therefore keep working unchanged.)
+    AddLLS(u8, u8, u8),
+    SubLLS(u8, u8, u8),
+    MulLLS(u8, u8, u8),
+    /// `Add; StoreLocal(d)`: same scheme, operands taken from the stack.
+    AddS(u16),
+    SubS(u16),
+    MulS(u16),
     GetUpval(u16),
     SetUpval(u16),
     StoreUpval(u16),
@@ -273,8 +284,8 @@ impl Op {
         use Op::*;
         match *self {
             Nil | True | False | Const(_) | Dup | GetLocal(_) | GetUpval(_) | GetGlobal(_) | Closure(_)
-            | NewTable(_) | NewArray(_) | Struct(_) | GetMethod(_) | AddLL(..) | SubLL(..) | MulLL(..)
-            | GetLocalField(..) | Import(_) | MatchFail(_) => 1,
+            | NewTable(_) | NewArray(_) | Struct(_) | GetMethod(_) | AddLL(..) | SubLL(..) | MulLL(..) | AddLLS(..)
+            | SubLLS(..) | MulLLS(..) | GetLocalField(..) | Import(_) | MatchFail(_) => 1,
             Dup2 | GetLocal2(..) => 2,
             Pop | StoreLocal(_) | StoreUpval(_) | StoreGlobal(_) | DefGlobal(_) | Append | InitField(_)
             | SetField(_) | GetIndex | DefMethod(_) | Return => -1,
@@ -284,6 +295,7 @@ impl Op {
             | IterNext1(_) | IterNext2(_) | ReturnNil | ReturnLocal(_) | GetExport(_) | IsVariant(..) | Unpack(_)
             | Try | JNotEqLL(..) | JNotNeLL(..) | JNotLtLL(..) | JNotLeLL(..) | JNotGtLL(..) | JNotGeLL(..)
             | JNotEqLK(..) | JNotNeLK(..) | JNotLtLK(..) | JNotLeLK(..) | JNotGtLK(..) | JNotGeLK(..) | Ext(_) => 0,
+            AddS(_) | SubS(_) | MulS(_) => -1,
             Add | Sub | Mul | Div | Rem | Pow | BitAnd | BitOr | BitXor | Shl | Shr | Eq | Ne | Lt | Le | Gt | Ge
             | JumpIfFalse(_) | JumpIfTrue(_) | And(_) | Or(_) => -1,
             JNotEq(_) | JNotNe(_) | JNotLt(_) | JNotLe(_) | JNotGt(_) | JNotGe(_) | StoreField(_) | InitIndex

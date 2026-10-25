@@ -39,7 +39,7 @@ struct HashPart {
 #[inline(always)]
 fn hash_key(k: Value) -> u32 {
     if k.is_str() {
-        unsafe { k.as_gc_unchecked::<Str>().hash }
+        unsafe { k.as_gc_unchecked::<Str>().hash() }
     } else {
         mix64(k.bits()) as u32
     }
@@ -160,9 +160,12 @@ pub struct Table {
 fn arr_index(key: Value) -> Option<usize> {
     if key.is_num() {
         let n = key.as_num();
-        let i = n as usize;
-        if i as f64 == n {
-            return Some(i);
+        // `0 <= n < 2^53` also rejects NaN, so the unchecked conversion is sound
+        if (0.0..9007199254740992.0).contains(&n) {
+            let i = unsafe { n.to_int_unchecked::<usize>() };
+            if i as f64 == n {
+                return Some(i);
+            }
         }
     }
     None
@@ -226,7 +229,7 @@ impl Table {
         if self.map.live == 0 {
             return Value::NIL;
         }
-        self.map.find(Value::from(key), key.hash).map_or(Value::NIL, |e| self.map.entries[e].val)
+        self.map.find(Value::from(key), key.hash()).map_or(Value::NIL, |e| self.map.entries[e].val)
     }
 
     pub fn contains(&self, key: Value) -> bool {

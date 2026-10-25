@@ -128,3 +128,9 @@ for i in 0..50000 { big:push(i); }
 var sum = 0;
 for v in big { sum += v; }
 print(big:len(), sum, big[49999], big:pop():unwrap(), big:len());   // expect: 50000 1249975000 49999 49999 49999
+
+// NaN and infinite indexes are errors like any other bad index
+const nan = 0 / 0;
+const inf = 1 / 0;
+print(catch_panic(|| => a[nan]):is_err(), catch_panic(|| => a[inf]):is_err(), catch_panic(|| => a[-inf]):is_err());   // expect: true true true
+print(catch_panic(|| => { a[nan] = 1; }):is_err(), a:get(nan), a:get(inf));   // expect: true None None

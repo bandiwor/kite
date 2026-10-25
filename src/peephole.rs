@@ -210,6 +210,13 @@ fn match_tail(entries: &[Entry], consts: &[Value], ok: &dyn Fn(usize) -> bool) -
         (GetLocal2(x, y), Add) => AddLL(x, y),
         (GetLocal2(x, y), Sub) => SubLL(x, y),
         (GetLocal2(x, y), Mul) => MulLL(x, y),
+        // fused ops keep the `StoreLocal` after them (see `Op::AddLLS`)
+        (AddLL(x, y), StoreLocal(d)) => return Some((Rewrite::Two(AddLLS(x, y, small_slot(d)?), StoreLocal(d)), 2)),
+        (SubLL(x, y), StoreLocal(d)) => return Some((Rewrite::Two(SubLLS(x, y, small_slot(d)?), StoreLocal(d)), 2)),
+        (MulLL(x, y), StoreLocal(d)) => return Some((Rewrite::Two(MulLLS(x, y, small_slot(d)?), StoreLocal(d)), 2)),
+        (Add, StoreLocal(d)) => return Some((Rewrite::Two(AddS(d), StoreLocal(d)), 2)),
+        (Sub, StoreLocal(d)) => return Some((Rewrite::Two(SubS(d), StoreLocal(d)), 2)),
+        (Mul, StoreLocal(d)) => return Some((Rewrite::Two(MulS(d), StoreLocal(d)), 2)),
         (GetLocal(x), GetLocal(y)) => GetLocal2(small_slot(x)?, small_slot(y)?),
         (Pop, Pop) => PopN(2),
         (PopN(n), Pop) | (Pop, PopN(n)) if n < u16::MAX => PopN(n + 1),
@@ -411,6 +418,41 @@ mod tests {
     #[test]
     fn store_fusion() {
         assert_eq!(opt(vec![Op::SetLocal(1), Op::Pop, Op::Nil, Op::Return]), vec![Op::StoreLocal(1), Op::ReturnNil]);
+    }
+
+    #[test]
+    fn arithmetic_fused_with_its_store_keeps_the_store() {
+        // `x = a + b`: the fused op is followed by the plain store (its slow path falls into it)
+        assert_eq!(
+            opt(vec![Op::GetLocal2(0, 1), Op::Add, Op::StoreLocal(2), Op::Nil, Op::Return]),
+            vec![Op::AddLLS(0, 1, 2), Op::StoreLocal(2), Op::ReturnNil]
+        );
+        assert_eq!(
+            opt(vec![Op::GetLocal2(0, 1), Op::Mul, Op::StoreLocal(0), Op::Nil, Op::Return]),
+            vec![Op::MulLLS(0, 1, 0), Op::StoreLocal(0), Op::ReturnNil]
+        );
+        // operands from the stack
+        assert_eq!(
+            opt(vec![Op::GetLocal(0), Op::Const(k(0)), Op::Sub, Op::StoreLocal(3), Op::Nil, Op::Return]),
+            vec![Op::GetLocal(0), Op::SubK(k(0)), Op::StoreLocal(3), Op::ReturnNil]
+        );
+        assert_eq!(
+            opt(vec![Op::GetUpval(0), Op::GetUpval(1), Op::Add, Op::StoreLocal(300), Op::Nil, Op::Return]),
+            vec![Op::GetUpval(0), Op::GetUpval(1), Op::AddS(300), Op::StoreLocal(300), Op::ReturnNil]
+        );
+        // a destination above slot 255 cannot use the three-byte form
+        assert_eq!(
+            opt(vec![Op::GetLocal2(0, 1), Op::Add, Op::StoreLocal(300), Op::Nil, Op::Return]),
+            vec![Op::AddLL(0, 1), Op::StoreLocal(300), Op::ReturnNil]
+        );
+    }
+
+    #[test]
+    fn a_jump_into_the_store_prevents_the_fusion() {
+        // 0: Jump -> 3 (the StoreLocal) ; 1: GetLocal2 ; 2: Add ; 3: StoreLocal ; 4: Nil ; 5: Return
+        let code = vec![Op::Jump(o(2)), Op::GetLocal2(0, 1), Op::Add, Op::StoreLocal(2), Op::Nil, Op::Return];
+        let out = opt(code);
+        assert!(!out.iter().any(|op| matches!(op, Op::AddLLS(..) | Op::AddS(_))), "{:?}", out);
     }
 
     #[test]

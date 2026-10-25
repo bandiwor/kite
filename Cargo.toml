@@ -16,6 +16,8 @@ path = "src/main.rs"
 [features]
 # Count executed opcodes and opcode pairs (printed at exit); for choosing superinstructions.
 op-profile = []
+# Use the system allocator instead of the small-object pool (for valgrind / sanitizers).
+system-alloc = []
 
 [profile.release]
 opt-level = 3

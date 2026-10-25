@@ -33,3 +33,9 @@ impl Bag {
 const bag = Bag([1, 2, 3]);
 print(bag:len(), bag:map(|x| => x + 1).items);   // expect: 3 [2, 3, 4]
 print(catch_panic(|| => 5:len()):unwrap_err().message);   // expect: cannot call method 'len' on number
+
+// natives check their arity when called from the loop too
+print(catch_panic(|| => [1]:len(5)):unwrap_err().message);   // expect: function 'len' expects 1 argument but got 2
+print(catch_panic(|| => "abc":upper(1, 2)):unwrap_err().message);   // expect: function 'upper' expects 1 argument but got 3
+print(catch_panic(|| => [1, 2]:first(), ):is_ok());   // expect: true
+print(catch_panic(|| => [1]:push()):unwrap_err().message);   // expect: push: expected a value to push

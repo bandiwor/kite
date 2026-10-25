@@ -106,16 +106,33 @@ impl<T> std::fmt::Debug for Gc<T> {
 #[repr(C)]
 pub struct Str {
     pub hdr: Header,
-    pub hash: u32,
+    /// Content hash, computed on first use (`0` = not yet): most strings are never table keys.
+    hash: std::cell::Cell<u32>,
     /// Interned strings are unique per content, so equality is pointer equality.
     pub interned: bool,
     pub data: Box<str>,
 }
 
 impl Str {
+    pub fn new(data: Box<str>, interned: bool) -> Str {
+        Str { hdr: Header::new(Kind::Str), hash: std::cell::Cell::new(0), interned, data }
+    }
+
     #[inline(always)]
     pub fn as_str(&self) -> &str {
         &self.data
+    }
+
+    /// The content hash (never `0`).
+    #[inline]
+    pub fn hash(&self) -> u32 {
+        let h = self.hash.get();
+        if h != 0 {
+            return h;
+        }
+        let h = crate::hash::hash_bytes(self.data.as_bytes()).max(1);
+        self.hash.set(h);
+        h
     }
 }
 
@@ -129,7 +146,7 @@ impl GcObj for Str {
 /// String equality (pointer fast path, then content).
 #[inline(always)]
 pub fn str_eq(a: Gc<Str>, b: Gc<Str>) -> bool {
-    a == b || (!(a.interned && b.interned) && a.hash == b.hash && a.data == b.data)
+    a == b || (!(a.interned && b.interned) && a.data == b.data)
 }
 
 // ---- functions ---------------------------------------------------------------
