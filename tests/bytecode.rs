@@ -36,10 +36,8 @@ fn big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
 /// All protos reachable from the main one.
 fn all_protos(p: kite::object::Gc<kite::object::Proto>, out: &mut Vec<kite::object::Gc<kite::object::Proto>>) {
     out.push(p);
-    for c in &p.consts {
-        if let Some(q) = c.as_gc::<kite::object::Proto>() {
-            all_protos(q, out);
-        }
+    for q in &p.protos {
+        all_protos(*q, out);
     }
 }
 
@@ -88,19 +86,43 @@ fn compiled_code_is_structurally_valid() {
     });
 }
 
+fn count_ops(src: &str, optimize: bool, pred: impl Fn(&Op) -> bool) -> usize {
+    let mut vm = Vm::new();
+    vm.opts.no_optimize = !optimize;
+    let (proto, _) = vm.compile("t.kite", src).unwrap();
+    let mut protos = Vec::new();
+    all_protos(proto, &mut protos);
+    protos.iter().flat_map(|p| p.code.to_vec()).filter(|o| pred(o)).count()
+}
+
 #[test]
-fn fused_ops_use_double_instructions_only_when_optimizing() {
+fn comparisons_in_conditions_fuse_with_the_jump() {
     let src = "fn f(a, b) { var n = 0; while n < 10 { n += 1; if a < b { n += 1; } } n } f(1, 2);";
-    let count = |optimize: bool| {
-        let mut vm = Vm::new();
-        vm.opts.no_optimize = !optimize;
-        let (proto, _) = vm.compile("t.kite", src).unwrap();
-        let mut protos = Vec::new();
-        all_protos(proto, &mut protos);
-        protos.iter().flat_map(|p| p.code.to_vec()).filter(|o| matches!(o, Op::JNotLtLL(..) | Op::JNotLtLK(..))).count()
-    };
-    assert_eq!(count(false), 0);
-    assert!(count(true) >= 2);
+    for optimize in [true, false] {
+        // `while n < 10` and `if a < b` never materialise a boolean
+        assert_eq!(count_ops(src, optimize, |o| matches!(o, Op::Lt(..) | Op::Gt(..) | Op::Le(..) | Op::Ge(..))), 0);
+        assert!(count_ops(src, optimize, |o| matches!(o, Op::JLtK(..))) >= 1);
+        assert!(count_ops(src, optimize, |o| matches!(o, Op::JNotLt(..))) >= 1);
+    }
+}
+
+#[test]
+fn peephole_shrinks_code_without_changing_the_result() {
+    let src = "fn f(n) { var s = 0; for i in 0..n { if i % 2 == 0 { continue; } s += i; } s } print(f(10));";
+    let len = |optimize: bool| count_ops(src, optimize, |_| true);
+    assert!(len(true) <= len(false));
+    for optimize in [true, false] {
+        let (out, r) = run(src, optimize);
+        r.unwrap();
+        assert_eq!(out.trim(), "25");
+    }
+}
+
+#[test]
+fn arithmetic_on_locals_is_one_instruction() {
+    // `s = s + i * 2` needs no temporaries to shuttle values around: Mul into a register, Add into s
+    let src = "fn f(i) { var s = 0; s = s + i * 2; s } f(3);";
+    assert_eq!(count_ops(src, true, |o| matches!(o, Op::Move(..))), 0);
 }
 
 #[test]
@@ -122,25 +144,8 @@ fn jumps_longer_than_16_bits() {
 }
 
 #[test]
-fn slots_above_255_and_constants_above_65535() {
+fn constants_and_names_above_the_short_operand_range() {
     big_stack(|| {
-        // 300 locals: fused forms need slots < 256, the rest must fall back to plain ops
-        let mut src = String::from("fn f() {\n");
-        for i in 0..300 {
-            src.push_str(&format!("var v{} = {};\n", i, i));
-        }
-        src.push_str("var s = v299 + v298;\n s += v297;\n s = s + v1 * v2;\n");
-        src.push_str("var i = 0; while v299 > i { i += 1; if v298 < v299 { s += 1; } }\n");
-        src.push_str("for k in 0..3 { s += k; } for q in [5, 6] { s += q; }\n");
-        src.push_str("s }\nprint(f());\n");
-        // 299+298+297 + 1*2 + 299 (loop) + 3 + 11
-        let expect = 299 + 298 + 297 + 2 + 299 + 3 + 11;
-        for optimize in [true, false] {
-            let (out, r) = run(&src, optimize);
-            r.unwrap();
-            assert_eq!(out.trim(), expect.to_string(), "optimize={}", optimize);
-        }
-
         // 70000 distinct constants, then comparisons against late constants
         let mut src = String::from("fn g() { var s = 0;\n");
         for i in 0..70_000 {
@@ -155,5 +160,113 @@ fn slots_above_255_and_constants_above_65535() {
             r.unwrap();
             assert_eq!(out.trim(), format!("{}", expect), "optimize={}", optimize);
         }
+
+        // 600 field names, 600 globals and 600 methods: the u8 operand overflows into Ext words
+        let mut src = String::from("struct S { a }\nimpl S {\n");
+        for i in 0..600 {
+            src.push_str(&format!("fn m{}(self) {{ self.a + {} }}\n", i, i));
+        }
+        src.push_str("}\n");
+        for i in 0..600 {
+            src.push_str(&format!("var g{} = {};\n", i, i));
+        }
+        src.push_str("fn h() { const o = S(7); var t = { };\n");
+        for i in 0..600 {
+            src.push_str(&format!("t.f{} = g{}; g{} = g{} + 1;\n", i, i, i, i));
+        }
+        src.push_str("t.f599 + t.f0 + g599 + o:m599() + o:m0() }\nprint(h());\n");
+        // 599 + 0 + 600 + (7 + 599) + 7
+        for optimize in [true, false] {
+            let (out, r) = run(&src, optimize);
+            r.unwrap();
+            assert_eq!(out.trim(), "1812", "optimize={}", optimize);
+        }
     });
+}
+
+#[test]
+fn register_limit_is_reported_not_miscompiled() {
+    // more than 250 live locals cannot fit in the register window
+    let mut src = String::from("fn f() {\n");
+    for i in 0..300 {
+        src.push_str(&format!("var v{} = {};\n", i, i));
+    }
+    src.push_str("v299 }\nprint(f());\n");
+    let (_, r) = run(&src, true);
+    let e = r.unwrap_err();
+    assert!(e.contains("250 registers"), "{}", e);
+
+    // 250 - 2 locals still work (and so do many temporaries on top of them)
+    let mut src = String::from("fn f() {\n");
+    for i in 0..200 {
+        src.push_str(&format!("var v{} = {};\n", i, i));
+    }
+    src.push_str("(v199 + (v198 + (v197 + (v196 + (v195 + v194))))) + [v1, v2, v3]:len() }\nprint(f());\n");
+    let (out, r) = run(&src, true);
+    r.unwrap();
+    assert_eq!(out.trim(), "1182");
+
+    // an expression that nests deeper than the free registers
+    let mut src = String::from("fn f(x) { return ");
+    for _ in 0..300 {
+        src.push_str("1 + (");
+    }
+    src.push_str("x");
+    for _ in 0..300 {
+        src.push(')');
+    }
+    src.push_str("; }\nprint(f(1));\n");
+    let (_, r) = run(&src, true);
+    assert!(r.is_err());
+}
+
+#[test]
+fn evaluation_order_with_register_targets() {
+    // an operand that is a local must be read before a later operand modifies it
+    let src = r#"
+        fn f() {
+            var x = 1;
+            const a = x + { x = 5; 1 };
+            var y = 1;
+            y = [y, { y = 9; 2 }];
+            var z = 3;
+            z = z && z - 1;
+            var w = 2;
+            w = w * 10 + w;
+            return [a, x, y[0], y[1], z, w];
+        }
+        print(f());
+    "#;
+    for optimize in [true, false] {
+        let (out, r) = run(src, optimize);
+        r.unwrap();
+        assert_eq!(out.trim(), "[2, 5, 1, 2, 2, 22]", "optimize={}", optimize);
+    }
+}
+
+#[test]
+fn calls_may_change_captured_locals_only() {
+    // `x` is captured, so a call can change it: the left operand is read first.
+    // `n` is not captured: nothing a call does can change it, so it is read in place.
+    let src = r#"
+        fn f() {
+            var x = 1;
+            const g = || => { x = 10; 5 };
+            const r = x + g();
+            var y = 1;
+            const h = || => y;
+            y += h() + { y = 7; 1 };
+            var n = 1;
+            n += (|| => 2)();
+            [r, x, y, n]
+        }
+        print(f());
+    "#;
+    for optimize in [true, false] {
+        let (out, r) = run(src, optimize);
+        r.unwrap();
+        assert_eq!(out.trim(), "[6, 10, 3, 3]", "optimize={}", optimize);
+    }
+    let uncaptured = "fn f(c) { var s = 0; s += c(); s } f(|| => 1);";
+    assert_eq!(count_ops(uncaptured, true, |o| matches!(o, Op::Move(..))), 1);
 }

@@ -156,13 +156,15 @@ pub struct Proto {
     pub hdr: Header,
     pub name: Rc<str>,
     pub arity: u8,
-    /// Params + locals.
+    /// Registers holding parameters and local variables (the temporaries come after them).
     pub nslots: u16,
-    /// Maximum operand stack depth above the locals.
-    pub max_stack: u16,
+    /// Registers the function uses in total (the frame size).
+    pub nregs: u16,
     pub upvals: Vec<UpvalDesc>,
     pub code: Vec<Op>,
     pub consts: Vec<Value>,
+    /// Nested functions, referenced by `Closure`.
+    pub protos: Vec<Gc<Proto>>,
     /// Source offset per instruction (turned into line numbers lazily).
     pub offsets: Vec<u32>,
     pub source: Rc<SourceFile>,
@@ -171,14 +173,14 @@ pub struct Proto {
 impl Proto {
     #[inline(always)]
     pub fn frame_size(&self) -> usize {
-        self.nslots as usize + self.max_stack as usize
+        self.nregs as usize
     }
 }
 
 impl GcObj for Proto {
     const KIND: Kind = Kind::Proto;
     fn heap_size(&self) -> usize {
-        std::mem::size_of::<Proto>() + self.code.len() * 8 + self.consts.len() * 8 + self.offsets.len() * 4
+        std::mem::size_of::<Proto>() + self.code.len() * 4 + self.consts.len() * 8 + self.protos.len() * 8 + self.offsets.len() * 4
     }
 }
 

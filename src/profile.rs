@@ -2,7 +2,7 @@
 //!
 //! Records how often each opcode and each consecutive pair of opcodes runs and
 //! prints the top entries when the process exits.  Used to decide which
-//! patterns deserve a superinstruction in the peephole optimiser.
+//! patterns deserve a fused instruction.
 
 use crate::op::Op;
 use std::cell::RefCell;

@@ -157,6 +157,9 @@ impl Heap {
                 for &c in &pr.consts {
                     self.mark_value(c);
                 }
+                for &p in &pr.protos {
+                    self.mark_gc(p);
+                }
             }
             Kind::Closure => {
                 let c = &*(p as *mut Closure);

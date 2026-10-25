@@ -2,7 +2,7 @@
 name = "kite"
 version = "0.1.0"
 edition = "2021"
-description = "Kite: a small, fast, dynamically typed, expression-oriented language with a register-less bytecode VM"
+description = "Kite: a small, fast, dynamically typed, expression-oriented language with a register-based bytecode VM"
 license = "MIT"
 
 [lib]

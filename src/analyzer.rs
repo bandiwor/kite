@@ -37,6 +37,8 @@ pub struct FuncInfo {
     /// Number of frame slots used by parameters and locals.
     pub nslots: u16,
     pub upvals: Vec<UpvalDesc>,
+    /// Slots that some closure captures (so a call may change them behind the code's back).
+    pub captured: Vec<u16>,
 }
 
 /// Frame slots of one pattern node.
@@ -98,6 +100,7 @@ struct FuncState {
     next_slot: u32,
     max_slot: u32,
     upvals: Vec<UpvalDesc>,
+    captured: Vec<u16>,
     loop_depth: u32,
     is_main: bool,
 }
@@ -110,6 +113,7 @@ impl FuncState {
             next_slot: 0,
             max_slot: 0,
             upvals: Vec::new(),
+            captured: Vec::new(),
             loop_depth: 0,
             is_main,
         }
@@ -195,7 +199,7 @@ pub fn analyze(
         res: a.res,
         funcs: a.funcs,
         for_base: a.for_base,
-        main: FuncInfo { nslots: main.max_slot as u16, upvals: Vec::new() },
+        main: FuncInfo { nslots: main.max_slot as u16, upvals: Vec::new(), captured: main.captured },
     })
 }
 
@@ -337,8 +341,8 @@ impl<'a> Analyzer<'a> {
         if fs.next_slot > fs.max_slot {
             fs.max_slot = fs.next_slot;
         }
-        if slot > u16::MAX as u32 - 8 {
-            self.error(at, "too many local variables in one function");
+        if slot as usize >= crate::op::MAX_REG - 1 {
+            self.error(at, "too many local variables in one function (a function can use 250 registers)");
             return 0;
         }
         slot as u16
@@ -360,6 +364,12 @@ impl<'a> Analyzer<'a> {
         if self.at_top_level() {
             return Res::Global;
         }
+        let slot = self.alloc_slot(at);
+        self.bind_local(name, is_const, at, slot)
+    }
+
+    /// Make `name` visible as the local in register `slot` (reserved by `alloc_slot`).
+    fn bind_local(&mut self, name: Sym, is_const: bool, at: NodeId, slot: u16) -> Res {
         let dup = {
             let fs = self.fns.last().unwrap();
             let first = fs.scopes.last().map_or(0, |s| s.first_local);
@@ -369,7 +379,6 @@ impl<'a> Analyzer<'a> {
             let msg = format!("'{}' is already declared in this scope", self.name(name));
             self.error(at, msg);
         }
-        let slot = self.alloc_slot(at);
         let fs = self.fs();
         let scope = fs.scopes.len() - 1;
         fs.locals.push(Local { name, slot, is_const, scope });
@@ -403,6 +412,7 @@ impl<'a> Analyzer<'a> {
             };
             let sc = &mut self.fns[parent].scopes[scope];
             sc.captured_min = Some(sc.captured_min.map_or(slot, |m| m.min(slot)));
+            self.fns[parent].captured.push(slot);
             return Some((self.add_upvalue(fi, UpvalDesc { is_local: true, index: slot }), is_const));
         }
         if let Some((idx, is_const)) = self.find_upvalue(parent, name) {
@@ -473,7 +483,7 @@ impl<'a> Analyzer<'a> {
         }
         self.expr(body);
         let fs = self.fns.pop().unwrap();
-        self.funcs[fid.0 as usize] = FuncInfo { nslots: fs.max_slot as u16, upvals: fs.upvals };
+        self.funcs[fid.0 as usize] = FuncInfo { nslots: fs.max_slot as u16, upvals: fs.upvals, captured: fs.captured };
     }
 
     /// Bind `name` for a pattern: declare it, or (in later alternatives of an
@@ -703,10 +713,17 @@ impl<'a> Analyzer<'a> {
                     self.res[id.idx()] = r;
                     self.expr(init);
                 } else {
+                    // The register is reserved *before* the initialiser, which lets the compiler
+                    // evaluate it straight into the variable.  The name only becomes visible
+                    // afterwards (`var x = x + 1` still refers to the outer `x`).
+                    let reserved = if self.at_top_level() { None } else { Some(self.alloc_slot(id)) };
                     if init.is_some() {
                         self.expr(init);
                     }
-                    let r = self.declare(name, is_const, id);
+                    let r = match reserved {
+                        Some(slot) => self.bind_local(name, is_const, id, slot),
+                        None => Res::Global,
+                    };
                     self.res[id.idx()] = r;
                 }
             }

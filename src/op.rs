@@ -1,20 +1,24 @@
-//! Bytecode.
+//! Bytecode of the register machine.
 //!
 //! An instruction is a Rust `enum` that is exactly **4 bytes**: a tag byte plus up
-//! to three bytes of operands (`u8`, `u16`, `(u8, u8)`, `(u8, u16)`, or the 24-bit
-//! `U24`/`I24`).  The VM dispatches with a plain `match` (jump table), the
-//! compiler/peephole can pattern-match on slices of ops, and the disassembler comes
-//! for free via `Debug`.
+//! to three bytes of operands.  The VM dispatches with a plain `match` (jump table),
+//! the compiler can pattern-match on slices of ops, and the disassembler comes for
+//! free via `Debug`.
 //!
-//! Instructions that need more than three operand bytes are **double**: the
-//! first word holds the opcode and its operands, the following word is an
-//! `Op::Ext(I24)` carrying the branch offset (see [`Op::is_wide`]).  These are the
-//! fused compare-and-branch ops and the loop ops.
+//! Operands are *registers*: slots of the current frame (`R[0..nregs)`, at most 250).
+//! The first registers are the function's parameters and local variables, the rest
+//! are temporaries handed out by the compiler in stack order.  In the descriptions
+//! below `A`, `B`, `C` are register operands (`u8`), `K[x]` is entry `x` of the
+//! function's constant table, `Bx` a 16-bit operand.
 //!
-//! Branch offsets are counted in words and are relative to the first word *after*
-//! the instruction (after the `Ext` word for double instructions).
+//! Instructions that need more than three operand bytes are **double**: the first
+//! word holds the opcode and its register operands, the following word is an
+//! `Op::Ext(I24)`.  For *branching* doubles ([`Op::is_branch`]) the `Ext` is the branch
+//! offset (counted in words from the first word after the `Ext`); for the others
+//! it carries an extra 24-bit payload (a constant index, a global symbol, ...).
 //!
-//! Adding an opcode = add a variant, its `stack_effect`, and a VM arm.
+//! Adding an opcode = add a variant, its VM arm, and (if it branches or has an `Ext`)
+//! list it in `is_wide`/`is_branch`.
 
 use std::fmt;
 
@@ -83,247 +87,237 @@ impl fmt::Debug for I24 {
     }
 }
 
+/// Highest register number the compiler hands out.
+pub const MAX_REG: usize = 250;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(u8)]
 pub enum Op {
-    // ---- constants & stack ----
-    Nil,
-    True,
-    False,
-    Const(U24),
-    Pop,
-    PopN(u16),
-    /// Duplicate the top value.
-    Dup,
-    /// Duplicate the top two values.
-    Dup2,
+    // ---- moves and constants ----
+    /// `R[A] = R[B]`
+    Move(u8, u8),
+    /// `R[A] = K[Bx]`
+    LoadK(u8, u16),
+    /// `R[A] = K[ext]` (double; the constant index does not fit 16 bits)
+    LoadKW(u8),
+    /// `R[A] = imm` (a small integer)
+    LoadI(u8, i16),
+    /// `R[A ..= A+B] = nil`
+    LoadNil(u8, u8),
+    LoadTrue(u8),
+    LoadFalse(u8),
 
-    // ---- variables ----
-    GetLocal(u16),
-    /// Assign, keep the value on the stack (assignment is an expression).
-    SetLocal(u16),
-    /// Assign and pop (produced by the compiler for declarations and by the peephole).
-    StoreLocal(u16),
-    /// Push two locals (slots below 256).
-    GetLocal2(u8, u8),
-    /// Push `local[a] <op> local[b]` (slots below 256).
-    AddLL(u8, u8),
-    SubLL(u8, u8),
-    MulLL(u8, u8),
-    /// `AddLL; StoreLocal(d)` in one dispatch (slots below 256).  Always followed by the
-    /// `StoreLocal(d)` word: when both operands are numbers the op stores `local[a] + local[b]`
-    /// into `d` itself and skips that word, otherwise it behaves exactly like `AddLL` and
-    /// execution continues in `StoreLocal`.  (Operator hooks therefore keep working unchanged.)
-    AddLLS(u8, u8, u8),
-    SubLLS(u8, u8, u8),
-    MulLLS(u8, u8, u8),
-    /// `Add; StoreLocal(d)`: same scheme, operands taken from the stack.
-    AddS(u16),
-    SubS(u16),
-    MulS(u16),
-    GetUpval(u16),
-    SetUpval(u16),
-    StoreUpval(u16),
-    GetGlobal(U24),
-    SetGlobal(U24),
-    StoreGlobal(U24),
-    /// Define (or redefine) a global; pops.
-    DefGlobal(U24),
-    /// Close open upvalues for slots >= n of the current frame.
-    CloseUpvals(u16),
+    // ---- upvalues, globals ----
+    /// `R[A] = Upval[B]`
+    GetUpval(u8, u8),
+    /// `Upval[B] = R[A]`
+    SetUpval(u8, u8),
+    /// `R[A] = globals[Bx]` (`Bx` is the symbol index); errors when undefined
+    GetGlobal(u8, u16),
+    /// `globals[Bx] = R[A]`; errors when undefined
+    SetGlobal(u8, u16),
+    /// define (or redefine) `globals[Bx] = R[A]`
+    DefGlobal(u8, u16),
+    /// double variants with a 24-bit symbol index in the `Ext`
+    GetGlobalW(u8),
+    SetGlobalW(u8),
+    DefGlobalW(u8),
+    /// Close the open upvalues that point at registers `>= A`.
+    CloseUpvals(u8),
 
-    // ---- arithmetic ----
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Rem,
-    Pow,
-    Neg,
-    Not,
-    BitAnd,
-    BitOr,
-    BitXor,
-    BitNot,
-    Shl,
-    Shr,
-    /// `top = top <op> consts[k]` where the constant is a number.
-    AddK(U24),
-    SubK(U24),
-    MulK(U24),
-    DivK(U24),
-    RemK(U24),
-    /// `local[s] += consts[k]` (statement form, pushes nothing); slot < 256, const < 65536.
-    AddLocalK(u8, u16),
+    // ---- arithmetic: R[A] = R[B] op R[C] ----
+    Add(u8, u8, u8),
+    Sub(u8, u8, u8),
+    Mul(u8, u8, u8),
+    Div(u8, u8, u8),
+    Rem(u8, u8, u8),
+    Pow(u8, u8, u8),
+    BitAnd(u8, u8, u8),
+    BitOr(u8, u8, u8),
+    BitXor(u8, u8, u8),
+    Shl(u8, u8, u8),
+    Shr(u8, u8, u8),
+    /// `R[A] = R[B] op K[C]` where the constant is a number
+    AddK(u8, u8, u8),
+    SubK(u8, u8, u8),
+    MulK(u8, u8, u8),
+    DivK(u8, u8, u8),
+    RemK(u8, u8, u8),
+    /// `R[A] = op R[B]`
+    Neg(u8, u8),
+    Not(u8, u8),
+    BitNot(u8, u8),
 
-    // ---- comparison ----
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
+    // ---- comparisons producing a bool: R[A] = R[B] cmp R[C] ----
+    Eq(u8, u8, u8),
+    Ne(u8, u8, u8),
+    Lt(u8, u8, u8),
+    Le(u8, u8, u8),
+    Gt(u8, u8, u8),
+    Ge(u8, u8, u8),
 
     // ---- jumps ----
     Jump(I24),
-    /// Pop; jump if falsy.
-    JumpIfFalse(I24),
-    /// Pop; jump if truthy.
-    JumpIfTrue(I24),
-    /// `a && b`: if top is falsy jump (keeping it), else pop and fall through.
-    And(I24),
-    /// `a || b`: if top is truthy jump (keeping it), else pop and fall through.
-    Or(I24),
-
-    // ---- fused compare + "jump if the comparison is false" (peephole) ----
-    JNotEq(I24),
-    JNotNe(I24),
-    JNotLt(I24),
-    JNotLe(I24),
-    JNotGt(I24),
-    JNotGe(I24),
-    // double: local OP local, offset in the following `Ext`
-    JNotEqLL(u8, u8),
-    JNotNeLL(u8, u8),
-    JNotLtLL(u8, u8),
-    JNotLeLL(u8, u8),
-    JNotGtLL(u8, u8),
-    JNotGeLL(u8, u8),
-    // double: local OP constant (local < 256, const < 65536)
-    JNotEqLK(u8, u16),
-    JNotNeLK(u8, u16),
-    JNotLtLK(u8, u16),
-    JNotLeLK(u8, u16),
-    JNotGtLK(u8, u16),
-    JNotGeLK(u8, u16),
+    /// Double: jump (offset in the `Ext`) if `R[A]` is truthy / falsy.
+    JTrue(u8),
+    JFalse(u8),
+    /// Double: jump if `R[A] cmp R[B]` holds (`JNot…`: if it does not hold).
+    /// `==`/`!=` are exact complements, so only `JEq`/`JNe` exist for them; for the
+    /// orderings `!(a < b)` differs from `a >= b` when a NaN is involved, so both exist.
+    JEq(u8, u8),
+    JNe(u8, u8),
+    JLt(u8, u8),
+    JNotLt(u8, u8),
+    JLe(u8, u8),
+    JNotLe(u8, u8),
+    JGt(u8, u8),
+    JNotGt(u8, u8),
+    JGe(u8, u8),
+    JNotGe(u8, u8),
+    /// The same against a constant: `R[A] cmp K[Bx]`.
+    JEqK(u8, u16),
+    JNeK(u8, u16),
+    JLtK(u8, u16),
+    JNotLtK(u8, u16),
+    JLeK(u8, u16),
+    JNotLeK(u8, u16),
+    JGtK(u8, u16),
+    JNotGtK(u8, u16),
+    JGeK(u8, u16),
+    JNotGeK(u8, u16),
 
     // ---- calls ----
-    /// Call the value below the `n` arguments.
-    Call(u8),
+    /// `R[A] = R[A](R[A+1], …, R[A+B])`
+    Call(u8, u8),
     /// Like `Call`, but reuses the current frame when the callee is a closure.
-    /// Always followed by a `Return` (used when the callee is not a closure).
-    TailCall(u8),
-    Return,
+    /// Always followed by `Return(A)` (which runs when the callee is not a plain closure).
+    TailCall(u8, u8),
+    Return(u8),
     ReturnNil,
-    /// `GetLocal; Return`
-    ReturnLocal(u16),
-    /// Create a closure from the prototype in `consts[k]`.
-    Closure(U24),
+    /// `R[A] = closure(protos[Bx])`
+    Closure(u8, u16),
 
-    // ---- tables, fields, structs ----
-    /// New empty table (`n` = expected number of entries).
-    NewTable(u16),
-    /// New empty array with room for `n` items.
-    NewArray(u16),
-    /// `[arr, v] -> [arr]`: array literal element (any value, `nil` included).
-    Append,
-    /// `[t, v] -> [t]`  (table literal `name: v`)
-    InitField(U24),
-    /// `[t, k, v] -> [t]`  (table literal `[k]: v`)
-    InitIndex,
-    GetField(U24),
-    /// `GetLocal; GetField`: push `local[s].name` (slot < 256, const < 65536).
-    GetLocalField(u8, u16),
-    /// `[obj, v] -> [v]`
-    SetField(U24),
-    /// `[obj, v] -> []`
-    StoreField(U24),
-    GetIndex,
-    /// `[obj, k, v] -> [v]`
-    SetIndex,
-    /// `[obj, k, v] -> []`
-    StoreIndex,
-    /// `[obj] -> [function, obj]`: resolve `obj:name(...)`.
-    GetMethod(U24),
-    /// Instantiate the struct type template in `consts[k]`.
-    Struct(U24),
-    /// `[type, closure] -> [type]`: register an `impl` function under `consts[k]`.
-    DefMethod(U24),
+    // ---- tables, arrays, fields ----
+    /// `R[A] = {}` (`Bx` = expected number of entries)
+    NewTable(u8, u16),
+    /// `R[A] = []` (`Bx` = expected number of items)
+    NewArray(u8, u16),
+    /// Append `R[B ..< B+C]` to the array `R[A]` (array literals; any value, `nil` included).
+    AppendN(u8, u8, u8),
+    /// Table literal `{ name: v }`: `R[A].K[B] = R[C]`
+    InitField(u8, u8, u8),
+    /// Double: `R[A].K[ext] = R[B]`
+    InitFieldW(u8, u8),
+    /// Table literal `{ [k]: v }`: `R[A][R[B]] = R[C]`
+    InitIndex(u8, u8, u8),
+    /// `R[A] = R[B].K[C]`
+    GetField(u8, u8, u8),
+    /// Double: `R[A] = R[B].K[ext]`
+    GetFieldW(u8, u8),
+    /// `R[A].K[B] = R[C]`
+    SetField(u8, u8, u8),
+    /// Double: `R[A].K[ext] = R[B]`
+    SetFieldW(u8, u8),
+    /// `R[A] = R[B][R[C]]`
+    GetIndex(u8, u8, u8),
+    /// `R[A][R[B]] = R[C]`
+    SetIndex(u8, u8, u8),
+    /// Resolve `obj:name(…)`: `R[A+1] = R[B]; R[A] = method(R[B], K[C])`.
+    GetMethod(u8, u8, u8),
+    /// Double: the method name is `K[ext]`.
+    GetMethodW(u8, u8),
+
+    // ---- structs and unions ----
+    /// `R[A] = instantiate(K[Bx])` (a struct/union type template)
+    Struct(u8, u16),
+    /// Double: register the function `R[B]` as method `K[ext]` of the type `R[A]`.
+    DefMethod(u8, u8),
 
     // ---- pattern matching ----
-    /// `[v] -> [bool]`: is `v` an instance of the variant (or struct) named `consts[k]`?
-    /// Operands: `arity` (number of sub-patterns, or 255 when the pattern has no parentheses), name constant.
-    IsVariant(u8, u16),
-    /// `[v, type] -> [bool]`: like `IsVariant`, and `v` must also belong to `type`.
-    IsVariantQ(u8, u16),
-    /// `[inst] -> [field]`: payload field `i` of a union variant / struct instance.
-    Unpack(u8),
-    /// No arm matched the value in local `slot`: raise an error (pushes, for the stack model).
-    MatchFail(u16),
+    /// Double: `R[A] = R[B] is the variant named K[ext & 0xFFFF]` with the arity `ext >> 16`
+    /// (255 = any arity); with `C != 255` the value must also belong to the type `R[C]`.
+    IsVariant(u8, u8, u8),
+    /// `R[A] = field C of the instance R[B]`
+    Unpack(u8, u8, u8),
+    /// No arm matched the value in `R[A]`: raise an error.
+    MatchFail(u8),
 
-    /// `[v] -> [payload]` for `Ok(payload)` / `Some(payload)`; for `Err(..)` / `None` the current
-    /// function returns `v` instead.  Anything else is an error.
-    Try,
+    /// `?`: if `R[A]` is `Ok(v)`/`Some(v)` set `R[A] = v`; if it is `Err`/`None` return it.
+    Try(u8),
 
     // ---- modules ----
-    /// Load (or fetch from the cache) the module whose path is `consts[k]`; pushes its exports table.
-    Import(U24),
-    /// `[module] -> [value]`: read an export, failing if the module does not have it.
-    GetExport(U24),
+    /// `R[A] = import K[Bx]`
+    Import(u8, u16),
+    /// Double: `R[A] = R[B].K[ext]` as an export; errors if the module has no such export.
+    GetExport(u8, u8),
 
-    // ---- loops (double) ----
-    /// Range loop setup: locals `s`,`s+1` hold start/end; if start >= end jump.
-    /// Otherwise the loop variable (`s+2`) is set to start.
-    ForPrep(u16),
-    /// Advance the range cursor; if still in range set the variable and jump back.
-    ForLoop(u16),
-    /// Table iteration, one variable (value).  Locals `s`,`s+1` = table, cursor.
-    IterNext1(u16),
-    /// Table iteration, two variables (key, value).
-    IterNext2(u16),
+    // ---- loops (double: the `Ext` is the branch offset) ----
+    /// Range loop setup: `R[A]`, `R[A+1]` hold start/end; if start >= end jump,
+    /// otherwise the loop variable `R[A+2]` is set to start.
+    ForPrep(u8),
+    /// Advance `R[A]`; while it is below `R[A+1]` set `R[A+2]` and jump back.
+    ForLoop(u8),
+    /// Iteration over an array / table / string: `R[A]` = collection, `R[A+1]` = cursor,
+    /// `R[A+2]` = value (one variable) or key and value in `R[A+2]`, `R[A+3]`.
+    IterNext1(u8),
+    IterNext2(u8),
 
-    /// Second word of a double instruction: its branch offset.  Never executed.
+    /// Second word of a double instruction.  Never executed.
     Ext(I24),
 }
 
 const _: () = assert!(std::mem::size_of::<Op>() == 4);
 
 impl Op {
-    /// Net effect on the operand stack when execution falls through to the next op.
-    pub fn stack_effect(&self) -> i32 {
-        use Op::*;
-        match *self {
-            Nil | True | False | Const(_) | Dup | GetLocal(_) | GetUpval(_) | GetGlobal(_) | Closure(_)
-            | NewTable(_) | NewArray(_) | Struct(_) | GetMethod(_) | AddLL(..) | SubLL(..) | MulLL(..) | AddLLS(..)
-            | SubLLS(..) | MulLLS(..) | GetLocalField(..) | Import(_) | MatchFail(_) => 1,
-            Dup2 | GetLocal2(..) => 2,
-            Pop | StoreLocal(_) | StoreUpval(_) | StoreGlobal(_) | DefGlobal(_) | Append | InitField(_)
-            | SetField(_) | GetIndex | DefMethod(_) | Return => -1,
-            PopN(n) => -(n as i32),
-            SetLocal(_) | SetUpval(_) | SetGlobal(_) | CloseUpvals(_) | Neg | Not | BitNot | AddK(_) | SubK(_)
-            | MulK(_) | DivK(_) | RemK(_) | AddLocalK(..) | Jump(_) | GetField(_) | ForPrep(_) | ForLoop(_)
-            | IterNext1(_) | IterNext2(_) | ReturnNil | ReturnLocal(_) | GetExport(_) | IsVariant(..) | Unpack(_)
-            | Try | JNotEqLL(..) | JNotNeLL(..) | JNotLtLL(..) | JNotLeLL(..) | JNotGtLL(..) | JNotGeLL(..)
-            | JNotEqLK(..) | JNotNeLK(..) | JNotLtLK(..) | JNotLeLK(..) | JNotGtLK(..) | JNotGeLK(..) | Ext(_) => 0,
-            AddS(_) | SubS(_) | MulS(_) => -1,
-            Add | Sub | Mul | Div | Rem | Pow | BitAnd | BitOr | BitXor | Shl | Shr | Eq | Ne | Lt | Le | Gt | Ge
-            | JumpIfFalse(_) | JumpIfTrue(_) | And(_) | Or(_) => -1,
-            JNotEq(_) | JNotNe(_) | JNotLt(_) | JNotLe(_) | JNotGt(_) | JNotGe(_) | StoreField(_) | InitIndex
-            | SetIndex => -2,
-            IsVariantQ(..) => -1,
-            StoreIndex => -3,
-            Call(n) | TailCall(n) => -(n as i32),
-        }
-    }
-
-    /// Double instruction: the word after it is an `Ext` with the branch offset.
+    /// Double instruction: the word after it is an `Ext`.
     #[inline]
     pub fn is_wide(&self) -> bool {
         use Op::*;
+        self.is_branch_wide()
+            || matches!(
+                self,
+                LoadKW(_)
+                    | GetGlobalW(_)
+                    | SetGlobalW(_)
+                    | DefGlobalW(_)
+                    | InitFieldW(..)
+                    | GetFieldW(..)
+                    | SetFieldW(..)
+                    | GetMethodW(..)
+                    | DefMethod(..)
+                    | IsVariant(..)
+                    | GetExport(..)
+            )
+    }
+
+    /// Double instruction whose `Ext` is a branch offset.
+    #[inline]
+    pub fn is_branch_wide(&self) -> bool {
+        use Op::*;
         matches!(
             self,
-            JNotEqLL(..)
-                | JNotNeLL(..)
-                | JNotLtLL(..)
-                | JNotLeLL(..)
-                | JNotGtLL(..)
-                | JNotGeLL(..)
-                | JNotEqLK(..)
-                | JNotNeLK(..)
-                | JNotLtLK(..)
-                | JNotLeLK(..)
-                | JNotGtLK(..)
-                | JNotGeLK(..)
+            JTrue(_)
+                | JFalse(_)
+                | JEq(..)
+                | JNe(..)
+                | JLt(..)
+                | JNotLt(..)
+                | JLe(..)
+                | JNotLe(..)
+                | JGt(..)
+                | JNotGt(..)
+                | JGe(..)
+                | JNotGe(..)
+                | JEqK(..)
+                | JNeK(..)
+                | JLtK(..)
+                | JNotLtK(..)
+                | JLeK(..)
+                | JNotLeK(..)
+                | JGtK(..)
+                | JNotGtK(..)
+                | JGeK(..)
+                | JNotGeK(..)
                 | ForPrep(_)
                 | ForLoop(_)
                 | IterNext1(_)
@@ -337,45 +331,31 @@ impl Op {
         1 + self.is_wide() as usize
     }
 
-    /// Offset of a single-word branch (`Jump`, `JumpIfFalse`, ...).  Double
-    /// instructions keep their offset in the `Ext` word instead.
+    /// Offset of the single-word branch (`Jump`).  Double instructions keep their
+    /// offset in the `Ext` word instead.
     pub fn jump_offset(&self) -> Option<i32> {
-        use Op::*;
-        Some(match *self {
-            Jump(o) | JumpIfFalse(o) | JumpIfTrue(o) | And(o) | Or(o) | JNotEq(o) | JNotNe(o) | JNotLt(o)
-            | JNotLe(o) | JNotGt(o) | JNotGe(o) => o.get(),
-            _ => return None,
-        })
+        match *self {
+            Op::Jump(o) => Some(o.get()),
+            _ => None,
+        }
     }
 
     /// Returns the single-word branch with a new offset, or `None` if it does not fit
     /// (or the op is not a single-word branch).
     pub fn with_jump_offset(self, off: i32) -> Option<Op> {
-        use Op::*;
-        let o = I24::new(off)?;
-        Some(match self {
-            Jump(_) => Jump(o),
-            JumpIfFalse(_) => JumpIfFalse(o),
-            JumpIfTrue(_) => JumpIfTrue(o),
-            And(_) => And(o),
-            Or(_) => Or(o),
-            JNotEq(_) => JNotEq(o),
-            JNotNe(_) => JNotNe(o),
-            JNotLt(_) => JNotLt(o),
-            JNotLe(_) => JNotLe(o),
-            JNotGt(_) => JNotGt(o),
-            JNotGe(_) => JNotGe(o),
-            _ => return None,
-        })
+        match self {
+            Op::Jump(_) => Some(Op::Jump(I24::new(off)?)),
+            _ => None,
+        }
     }
 
     /// Does control transfer somewhere (single-word or double instruction)?
     #[inline]
     pub fn is_branch(&self) -> bool {
-        self.is_wide() || self.jump_offset().is_some()
+        self.is_branch_wide() || matches!(self, Op::Jump(_))
     }
 
-    /// Value of an `Ext` word.
+    /// Signed value of an `Ext` word.
     #[inline(always)]
     pub fn ext(self) -> i32 {
         match self {
@@ -388,100 +368,56 @@ impl Op {
         }
     }
 
-    /// The unsigned 24-bit operand of a `U24` variant, read straight from the
-    /// word (`#[repr(u8)]` puts the tag in byte 0 and the three operand bytes
-    /// right behind it).  Only valid for variants whose whole payload is a `U24`.
+    /// Unsigned 24-bit payload of an `Ext` word (constant indices and the like).
     #[inline(always)]
-    pub fn imm24(self) -> u32 {
-        debug_assert!(self.has_24bit_payload());
+    pub fn ext_u(self) -> u32 {
+        self.ext() as u32 & U24::MAX
+    }
+
+    /// Unsigned 24-bit payload of an `Ext` word, read straight from the word.
+    #[inline(always)]
+    pub fn payload(self) -> u32 {
+        debug_assert!(matches!(self, Op::Ext(_)));
         #[cfg(target_endian = "little")]
         {
-            // SAFETY: `Op` is 4 bytes and these variants have no padding bytes
+            // SAFETY: `Op` is 4 bytes and `Ext` has no padding bytes
             unsafe { std::mem::transmute::<Op, u32>(self) >> 8 }
         }
         #[cfg(not(target_endian = "little"))]
         {
-            self.imm24_slow()
+            self.ext_u()
         }
     }
 
-    /// The signed 24-bit operand of an `I24` variant (`Jump`, `Ext`, ...); see [`Op::imm24`].
+    /// The signed 24-bit operand of `Jump` / `Ext`, read straight from the word
+    /// (`#[repr(u8)]` puts the tag in byte 0 and the three operand bytes right behind it).
     #[inline(always)]
     pub fn simm24(self) -> i32 {
-        debug_assert!(self.has_24bit_payload());
+        debug_assert!(matches!(self, Op::Jump(_) | Op::Ext(_)));
         #[cfg(target_endian = "little")]
         {
-            // SAFETY: as for `imm24`
+            // SAFETY: `Op` is 4 bytes and these variants have no padding bytes
             unsafe { std::mem::transmute::<Op, i32>(self) >> 8 }
         }
         #[cfg(not(target_endian = "little"))]
         {
-            self.imm24_slow() as i32
-        }
-    }
-
-    fn has_24bit_payload(&self) -> bool {
-        use Op::*;
-        matches!(
-            self,
-            Const(_)
-                | GetGlobal(_)
-                | SetGlobal(_)
-                | StoreGlobal(_)
-                | DefGlobal(_)
-                | AddK(_)
-                | SubK(_)
-                | MulK(_)
-                | DivK(_)
-                | RemK(_)
-                | Closure(_)
-                | InitField(_)
-                | GetField(_)
-                | SetField(_)
-                | StoreField(_)
-                | GetMethod(_)
-                | Struct(_)
-                | DefMethod(_)
-                | Import(_)
-                | GetExport(_)
-                | Jump(_)
-                | JumpIfFalse(_)
-                | JumpIfTrue(_)
-                | And(_)
-                | Or(_)
-                | JNotEq(_)
-                | JNotNe(_)
-                | JNotLt(_)
-                | JNotLe(_)
-                | JNotGt(_)
-                | JNotGe(_)
-                | Ext(_)
-        )
-    }
-
-    #[cfg(not(target_endian = "little"))]
-    fn imm24_slow(self) -> u32 {
-        use Op::*;
-        match self {
-            Const(k) | GetGlobal(k) | SetGlobal(k) | StoreGlobal(k) | DefGlobal(k) | AddK(k) | SubK(k) | MulK(k)
-            | DivK(k) | RemK(k) | Closure(k) | InitField(k) | GetField(k) | SetField(k) | StoreField(k)
-            | GetMethod(k) | Struct(k) | DefMethod(k) | Import(k) | GetExport(k) => k.get(),
-            Jump(o) | JumpIfFalse(o) | JumpIfTrue(o) | And(o) | Or(o) | JNotEq(o) | JNotNe(o) | JNotLt(o)
-            | JNotLe(o) | JNotGt(o) | JNotGe(o) | Ext(o) => o.get() as u32,
-            _ => unreachable!(),
+            match self {
+                Op::Jump(o) | Op::Ext(o) => o.get(),
+                _ => unreachable!(),
+            }
         }
     }
 
     /// Ops after which control never falls through to the next instruction.
     pub fn is_terminator(&self) -> bool {
-        matches!(self, Op::Jump(_) | Op::Return | Op::ReturnNil | Op::ReturnLocal(_))
+        matches!(self, Op::Jump(_) | Op::Return(_) | Op::ReturnNil | Op::MatchFail(_))
     }
 }
 
 /// Branch target (word index) of the instruction at `i`, if it branches.
 pub fn branch_target(code: &[Op], i: usize) -> Option<usize> {
     let op = code[i];
-    if op.is_wide() {
+    if op.is_branch_wide() {
         Some((i as i64 + 2 + code[i + 1].ext() as i64) as usize)
     } else {
         op.jump_offset().map(|o| (i as i64 + 1 + o as i64) as usize)
@@ -533,6 +469,13 @@ mod tests {
     }
 
     #[test]
+    fn operand_layouts_do_not_grow_the_word() {
+        // every operand shape used by the instruction set fits next to the tag byte
+        assert_eq!(std::mem::size_of::<(u8, u8, u8)>(), 3);
+        let _ = [Op::LoadI(1, -5), Op::LoadK(2, 65535), Op::Add(1, 2, 3), Op::JEqK(3, 65535), Op::Closure(4, 9)];
+    }
+
+    #[test]
     fn u24_roundtrip() {
         for v in [0, 1, 255, 256, 65535, 65536, 0x12_3456, U24::MAX] {
             assert_eq!(U24::new(v).unwrap().get(), v);
@@ -551,35 +494,51 @@ mod tests {
 
     #[test]
     fn raw_operand_access_matches_the_typed_one() {
-        for v in [0u32, 1, 255, 256, 65535, 65536, 0x12_3456, U24::MAX] {
-            let op = Op::Const(U24::new(v).unwrap());
-            assert_eq!(op.imm24(), v);
-            assert_eq!(Op::GetGlobal(U24::new(v).unwrap()).imm24(), v);
-        }
         for v in [0, 1, -1, 127, -128, 32767, -32768, 65536, -65537, I24::MIN, I24::MAX] {
             let o = I24::new(v).unwrap();
             assert_eq!(Op::Jump(o).simm24(), v, "Jump {}", v);
             assert_eq!(Op::Ext(o).simm24(), v);
-            assert_eq!(Op::JNotLt(o).simm24(), v);
             assert_eq!(Op::Ext(o).ext(), v);
+        }
+        for v in [0u32, 1, 255, 65535, 65536, 0x12_3456, 0x80_0000, U24::MAX] {
+            let e = Op::Ext(I24::new((v << 8) as i32 >> 8).unwrap());
+            assert_eq!(e.ext_u(), v);
+            assert_eq!(e.payload(), v);
         }
     }
 
     #[test]
     fn jump_roundtrip() {
-        let op = Op::JNotLt(I24::new(5).unwrap());
+        let op = Op::Jump(I24::new(5).unwrap());
         assert_eq!(op.jump_offset(), Some(5));
         assert_eq!(op.with_jump_offset(-7).unwrap().jump_offset(), Some(-7));
         assert_eq!(op.with_jump_offset(I24::MAX + 1), None);
-        assert_eq!(Op::Nil.with_jump_offset(1), None);
+        assert_eq!(Op::ReturnNil.with_jump_offset(1), None);
     }
 
     #[test]
     fn wide_ops_branch_through_ext() {
-        let code = [Op::JNotLtLL(1, 2), Op::Ext(I24::new(3).unwrap()), Op::Nil, Op::Nil, Op::Nil, Op::Nil];
+        let code = [
+            Op::JLt(1, 2),
+            Op::Ext(I24::new(3).unwrap()),
+            Op::ReturnNil,
+            Op::ReturnNil,
+            Op::ReturnNil,
+            Op::ReturnNil,
+        ];
         assert!(code[0].is_wide() && code[0].is_branch());
         assert_eq!(code[0].width(), 2);
         assert_eq!(branch_target(&code, 0), Some(5));
         assert_eq!(Op::Jump(I24::new(-2).unwrap()).width(), 1);
+        // a data double has an Ext too but does not branch
+        assert!(Op::LoadKW(1).is_wide() && !Op::LoadKW(1).is_branch());
+        assert!(verify(&code).is_ok());
+    }
+
+    #[test]
+    fn verify_rejects_bad_code() {
+        assert!(verify(&[Op::LoadKW(0)]).is_err());
+        assert!(verify(&[Op::Ext(I24::ZERO)]).is_err());
+        assert!(verify(&[Op::Jump(I24::new(5).unwrap()), Op::ReturnNil]).is_err());
     }
 }

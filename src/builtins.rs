@@ -668,7 +668,7 @@ fn input(vm: &mut Vm, a: &[Value]) -> R {
 
 fn gc(vm: &mut Vm, _: &[Value]) -> R {
     let before = vm.heap.bytes;
-    vm.collect_garbage();
+    vm.collect_garbage_precise();
     Ok(Value::num(before.saturating_sub(vm.heap.bytes) as f64))
 }
 

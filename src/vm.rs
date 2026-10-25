@@ -79,7 +79,10 @@ enum ModuleState {
 pub struct Frame {
     pub closure: Gc<Closure>,
     pub ip: *const Op,
+    /// Register 0 of this frame (its first parameter).
     pub base: *mut Value,
+    /// The register of the *calling* frame that receives this call's result.
+    pub ret: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -389,10 +392,10 @@ impl Vm {
         let closure = self.heap.alloc(Closure { hdr: Header::new(Kind::Closure), proto, upvals: Box::new([]) });
         self.reset();
         unsafe {
-            *self.sp = Value::from(closure);
-            self.sp = self.sp.add(1);
+            let slot = self.sp;
+            *slot = Value::from(closure);
             let stop = self.frames.len();
-            self.push_frame(closure, 0)?;
+            self.push_frame(closure, slot.add(1), 0, 0)?;
             let r = self.run(stop);
             if r.is_err() {
                 self.unwind(0, self.stack);
@@ -451,8 +454,11 @@ impl Vm {
 
     // ---- calls ----------------------------------------------------------------------
 
+    /// Push a frame for the closure `cl` whose `argc` arguments are at `base[0..argc)`.
+    /// `ret` is the register of the *caller's* frame that receives the result.
+    /// Sets `self.sp` to the top of the new frame.
     #[inline(always)]
-    unsafe fn push_frame(&mut self, cl: Gc<Closure>, argc: usize) -> RtResult<()> {
+    unsafe fn push_frame(&mut self, cl: Gc<Closure>, base: *mut Value, argc: usize, ret: u32) -> RtResult<()> {
         let proto = cl.proto;
         if proto.arity as usize != argc {
             return Err(rt_err(format!(
@@ -463,29 +469,33 @@ impl Vm {
                 argc
             )));
         }
-        let base = self.sp.sub(argc);
-        if self.frames.len() >= MAX_FRAMES || base.add(proto.frame_size()) > self.stack_end {
+        let top = base.add(proto.nregs as usize);
+        // a few slots of slack: operator hooks stage their operands just above the frame
+        if self.frames.len() >= MAX_FRAMES || top.add(8) > self.stack_end {
             return Err(rt_err("stack overflow"));
         }
-        let locals_end = base.add(proto.nslots as usize);
-        let mut p = self.sp;
-        while p < locals_end {
+        // registers behind the arguments start as nil: the collector scans the whole frame
+        let mut p = base.add(argc);
+        while p < top {
             *p = Value::NIL;
             p = p.add(1);
         }
-        self.sp = locals_end;
-        self.frames.push(Frame { closure: cl, ip: proto.code.as_ptr(), base });
+        self.sp = top;
+        self.frames.push(Frame { closure: cl, ip: proto.code.as_ptr(), base, ret });
         Ok(())
     }
 
-    /// Call the value sitting below `argc` arguments at the top of the stack.
-    /// Returns `true` if a new bytecode frame was pushed (the caller must run
-    /// it), `false` if the call completed and its result replaced the callee.
-    unsafe fn call_value_at(&mut self, argc: usize) -> RtResult<bool> {
-        let callee = *self.sp.sub(argc + 1);
+    /// Call the value at `slot`, with its `argc` arguments in the registers right behind it.
+    /// Returns `true` if a new bytecode frame was pushed (the caller must run it), `false`
+    /// if the call completed and its result was stored at `slot`.  A pushed frame returns
+    /// into register `ret` of the frame below.
+    ///
+    /// `self.sp` must be above the arguments (natives that call back push there).
+    unsafe fn call_at(&mut self, slot: *mut Value, argc: usize, ret: u32) -> RtResult<bool> {
+        let callee = *slot;
         match callee.obj_kind() {
             Some(Kind::Closure) => {
-                self.push_frame(callee.as_gc_unchecked::<Closure>(), argc)?;
+                self.push_frame(callee.as_gc_unchecked::<Closure>(), slot.add(1), argc, ret)?;
                 Ok(true)
             }
             Some(Kind::Native) => {
@@ -499,11 +509,8 @@ impl Vm {
                         argc
                     )));
                 }
-                let args = std::slice::from_raw_parts(self.sp.sub(argc), argc);
-                let r = (nat.func)(self, args)?;
-                self.sp = self.sp.sub(argc + 1);
-                *self.sp = r;
-                self.sp = self.sp.add(1);
+                let args = std::slice::from_raw_parts(slot.add(1), argc);
+                *slot = (nat.func)(self, args)?;
                 Ok(false)
             }
             Some(Kind::StructType) => {
@@ -525,17 +532,18 @@ impl Vm {
                     finalized: false,
                 });
                 let ctor = ty.hook(Hook::New);
-                let first = self.sp.sub(argc);
                 if !ctor.is_nil() {
                     // [Type, a1..an] -> [new, inst, a1..an]
-                    if self.sp.add(2) >= self.stack_end {
+                    if slot.add(argc + 10) >= self.stack_end {
                         return Err(rt_err("stack overflow"));
                     }
-                    std::ptr::copy(first, first.add(1), argc);
-                    *first = Value::from(inst);
-                    *first.sub(1) = ctor;
-                    self.sp = self.sp.add(1);
-                    return self.call_value_at(argc + 1);
+                    std::ptr::copy(slot.add(1), slot.add(2), argc);
+                    *slot.add(1) = Value::from(inst);
+                    *slot = ctor;
+                    if self.sp < slot.add(argc + 2) {
+                        self.sp = slot.add(argc + 2);
+                    }
+                    return self.call_at(slot, argc + 1, ret);
                 }
                 if argc > nfields {
                     return Err(rt_err(format!(
@@ -549,11 +557,9 @@ impl Vm {
                 }
                 let mut inst = inst;
                 for i in 0..argc {
-                    inst.fields[i] = *first.add(i);
+                    inst.fields[i] = *slot.add(1 + i);
                 }
-                self.sp = self.sp.sub(argc + 1);
-                *self.sp = Value::from(inst);
-                self.sp = self.sp.add(1);
+                *slot = Value::from(inst);
                 Ok(false)
             }
             Some(Kind::Variant) => {
@@ -571,7 +577,7 @@ impl Vm {
                         if argc == 1 { "was" } else { "were" }
                     )));
                 }
-                let fields: Box<[Value]> = std::slice::from_raw_parts(self.sp.sub(argc), argc).into();
+                let fields: Box<[Value]> = std::slice::from_raw_parts(slot.add(1), argc).into();
                 let inst = self.heap.alloc(Instance {
                     hdr: Header::new(Kind::Instance),
                     ty,
@@ -579,9 +585,7 @@ impl Vm {
                     tag: vc.tag,
                     finalized: false,
                 });
-                self.sp = self.sp.sub(argc + 1);
-                *self.sp = Value::from(inst);
-                self.sp = self.sp.add(1);
+                *slot = Value::from(inst);
                 Ok(false)
             }
             Some(Kind::Instance) => {
@@ -593,15 +597,17 @@ impl Vm {
                         inst.ty.name.as_str()
                     )));
                 }
-                if self.sp.add(2) >= self.stack_end {
+                if slot.add(argc + 10) >= self.stack_end {
                     return Err(rt_err("stack overflow"));
                 }
                 // [obj, a1..an] -> [call, obj, a1..an]
-                let first = self.sp.sub(argc);
-                std::ptr::copy(first.sub(1), first, argc + 1);
-                *first.sub(1) = hook;
-                self.sp = self.sp.add(1);
-                self.call_value_at(argc + 1)
+                std::ptr::copy(slot.add(1), slot.add(2), argc);
+                *slot.add(1) = callee;
+                *slot = hook;
+                if self.sp < slot.add(argc + 2) {
+                    self.sp = slot.add(argc + 2);
+                }
+                self.call_at(slot, argc + 1, ret)
             }
             _ => Err(rt_err(format!("cannot call a value of type {}", callee.type_name()))),
         }
@@ -613,22 +619,24 @@ impl Vm {
             return Err(rt_err("stack overflow (callbacks nested too deeply)"));
         }
         unsafe {
-            if self.sp.add(args.len() + 4) >= self.stack_end {
+            if self.sp.add(args.len() + 16) >= self.stack_end {
                 return Err(rt_err("stack overflow"));
             }
-            *self.sp = f;
-            self.sp = self.sp.add(1);
-            for &a in args {
-                *self.sp = a;
-                self.sp = self.sp.add(1);
+            let slot = self.sp;
+            *slot = f;
+            for (i, &a) in args.iter().enumerate() {
+                *slot.add(1 + i) = a;
             }
+            self.sp = slot.add(args.len() + 1);
             let stop = self.frames.len();
             self.nest += 1;
-            let r = match self.call_value_at(args.len()) {
+            let r = match self.call_at(slot, args.len(), 0) {
+                // the frame returns with `sp` back at `slot`
                 Ok(true) => self.run(stop),
                 Ok(false) => {
-                    self.sp = self.sp.sub(1);
-                    Ok(*self.sp)
+                    let v = *slot;
+                    self.sp = slot;
+                    Ok(v)
                 }
                 Err(e) => Err(e),
             };
@@ -638,7 +646,7 @@ impl Vm {
     }
 
     /// Like `call_value`, but on error the VM state is restored so execution
-    /// can continue (used by `pcall` and finalizers).
+    /// can continue (used by `catch_panic` and finalizers).
     pub fn call_protected(&mut self, f: Value, args: &[Value]) -> RtResult<Value> {
         let (nframes, sp, nest) = (self.frames.len(), self.sp, self.nest);
         let r = self.call_value(f, args);
@@ -1394,9 +1402,45 @@ impl Vm {
 
     /// Mark & sweep.  Must only be called at a safe point (`self.sp` synced).
     pub fn collect_garbage(&mut self) {
+        self.collect(false)
+    }
+
+    /// Like `collect_garbage`, but trims the dead temporaries of the topmost frame; only valid
+    /// when that frame is stopped in a call (the explicit `gc()` native).
+    pub fn collect_garbage_precise(&mut self) {
+        self.collect(true)
+    }
+
+    fn collect(&mut self, precise: bool) {
         unsafe {
+            let (live_end, frame_top) = self.live_stack(precise);
             let heap = &mut self.heap;
             let mut p = self.stack;
+            while p < live_end {
+                heap.mark_value(*p);
+                p = p.add(1);
+            }
+            // the dead registers are not marked, so they must not be read as live later on
+            let mut p = live_end;
+            while p < frame_top {
+                *p = Value::NIL;
+                p = p.add(1);
+            }
+            // Registers of the suspended frames that lie above the stack top (the callee's
+            // frame is smaller) hold dead temporaries.  They are not marked, so they must be
+            // cleared: when the frame resumes they would otherwise be scanned as dangling.
+            let mut high = self.sp;
+            for f in &self.frames {
+                high = high.max(f.base.add(f.closure.proto.nregs as usize));
+            }
+            let mut p = self.sp;
+            while p < high {
+                *p = Value::NIL;
+                p = p.add(1);
+            }
+            // values staged above the topmost frame (arguments of a native called back into
+            // the VM, values rooted by natives)
+            let mut p = frame_top;
             while p < self.sp {
                 heap.mark_value(*p);
                 p = p.add(1);
@@ -1446,6 +1490,33 @@ impl Vm {
             heap.sweep();
         }
         self.run_finalizers();
+    }
+
+    /// `(end of the live registers, top of the topmost frame)`.  Only `precise` collections
+    /// (see `collect_garbage_precise`) trust the instruction the frame stopped at.
+    ///
+    /// The topmost frame is stopped right after a known instruction, which tells how many of
+    /// its registers can hold live values: the locals, plus the temporaries that the
+    /// instruction names (temporaries are handed out in stack order, so nothing live lies above
+    /// the registers an instruction uses).  The dead temporaries above hold stale values that
+    /// must not keep garbage alive - `work(); gc()` has to finalize what `work` left behind.
+    /// Frames below the top are scanned completely.
+    fn live_stack(&self, precise: bool) -> (*mut Value, *mut Value) {
+        let Some(f) = self.frames.last() else { return (self.sp, self.sp) };
+        unsafe {
+            let proto = f.closure.proto;
+            let top = f.base.add(proto.nregs as usize);
+            let next = f.ip.offset_from(proto.code.as_ptr()) as usize;
+            let mut at = next.saturating_sub(1).min(proto.code.len().saturating_sub(1));
+            if at > 0 && matches!(proto.code[at], Op::Ext(_)) {
+                at -= 1;
+            }
+            let live = match live_regs(proto.code[at]) {
+                Some(n) if precise => n.max(proto.nslots as usize),
+                _ => proto.nregs as usize,
+            };
+            (f.base.add(live.min(proto.nregs as usize)), top)
+        }
     }
 
     fn run_finalizers(&mut self) {
@@ -1540,7 +1611,6 @@ impl Vm {
             let mut frame: *mut Frame = self.frames.as_mut_ptr().add(self.frames.len() - 1);
             let mut ip: *const Op = (*frame).ip;
             let mut base: *mut Value = (*frame).base;
-            let mut sp: *mut Value = self.sp;
 
             // copy the handle out of the frame first: auto-deref must not borrow through the raw pointer
             macro_rules! closure {
@@ -1551,33 +1621,30 @@ impl Vm {
             }
             let mut consts: *const Value = closure!().proto.consts.as_ptr();
 
-            macro_rules! push {
-                ($v:expr) => {{
-                    let v = $v;
-                    *sp = v;
-                    sp = sp.add(1);
-                }};
-            }
-            macro_rules! pop {
-                () => {{
-                    sp = sp.sub(1);
-                    *sp
-                }};
-            }
-            macro_rules! top {
-                () => {
-                    *sp.sub(1)
+            // register `i` of the current frame (usable as a place)
+            macro_rules! reg {
+                ($i:expr) => {
+                    *base.add($i as usize)
                 };
             }
-            macro_rules! peek {
-                ($n:expr) => {
-                    *sp.sub(1 + $n)
+            macro_rules! konst {
+                ($i:expr) => {
+                    *consts.add($i as usize)
                 };
             }
+            // `self.sp` is always the top of the current frame, so only `ip` has to be saved
             macro_rules! sync {
                 () => {{
                     (*frame).ip = ip;
-                    self.sp = sp;
+                }};
+            }
+            // switch to the frame on top (after a call or a return)
+            macro_rules! reload_nosp {
+                () => {{
+                    frame = self.frames.as_mut_ptr().add(self.frames.len() - 1);
+                    ip = (*frame).ip;
+                    base = (*frame).base;
+                    consts = closure!().proto.consts.as_ptr();
                 }};
             }
             macro_rules! reload {
@@ -1585,7 +1652,9 @@ impl Vm {
                     frame = self.frames.as_mut_ptr().add(self.frames.len() - 1);
                     ip = (*frame).ip;
                     base = (*frame).base;
-                    consts = closure!().proto.consts.as_ptr();
+                    let proto = closure!().proto;
+                    consts = proto.consts.as_ptr();
+                    self.sp = base.add(proto.nregs as usize);
                 }};
             }
             // run something fallible; on error the state is already synced for the trace
@@ -1617,112 +1686,7 @@ impl Vm {
                     ip = ip.offset($o as isize)
                 };
             }
-            macro_rules! arith {
-                ($kind:expr, $a:ident, $b:ident, $fast:expr) => {{
-                    let $b = peek!(0);
-                    let $a = peek!(1);
-                    if $a.is_num() && $b.is_num() {
-                        let ($a, $b) = ($a.as_num(), $b.as_num());
-                        sp = sp.sub(1);
-                        *sp.sub(1) = Value::num($fast);
-                    } else if let Some(cl) = self.arith_hook_closure($kind, $a, $b) {
-                        // [a, b] -> [hook, a, b]; the hook's result takes the place of all three
-                        *sp = $b;
-                        *sp.sub(1) = $a;
-                        *sp.sub(2) = Value::from(cl);
-                        sp = sp.add(1);
-                        sync!();
-                        enter_closure!(cl, 2);
-                    } else {
-                        let r = protect!(self.arith_slow($kind, $a, $b));
-                        sp = sp.sub(1);
-                        *sp.sub(1) = r;
-                        gc_check!();
-                    }
-                }};
-            }
-            macro_rules! arith_k {
-                ($kind:expr, $k:expr, $a:ident, $b:ident, $fast:expr) => {{
-                    let $a = top!();
-                    let kv = *consts.add($k as usize);
-                    if $a.is_num() {
-                        let ($a, $b) = ($a.as_num(), kv.as_num());
-                        *sp.sub(1) = Value::num($fast);
-                    } else if let Some(cl) = self.arith_hook_closure($kind, $a, kv) {
-                        // [a] -> [hook, a, k]
-                        *sp = $a;
-                        *sp.sub(1) = Value::from(cl);
-                        *sp.add(1) = kv;
-                        sp = sp.add(2);
-                        sync!();
-                        enter_closure!(cl, 2);
-                    } else {
-                        let r = protect!(self.arith_slow($kind, $a, kv));
-                        *sp.sub(1) = r;
-                        gc_check!();
-                    }
-                }};
-            }
-            macro_rules! bitop {
-                ($kind:expr, $a:ident, $b:ident, $fast:expr) => {{
-                    let $b = peek!(0);
-                    let $a = peek!(1);
-                    if $a.is_num() && $b.is_num() {
-                        let ($a, $b) = ($a.as_num() as i64, $b.as_num() as i64);
-                        sp = sp.sub(1);
-                        *sp.sub(1) = Value::num(($fast) as f64);
-                    } else if let Some(cl) = self.arith_hook_closure($kind, $a, $b) {
-                        *sp = $b;
-                        *sp.sub(1) = $a;
-                        *sp.sub(2) = Value::from(cl);
-                        sp = sp.add(1);
-                        sync!();
-                        enter_closure!(cl, 2);
-                    } else {
-                        let r = protect!(self.arith_slow($kind, $a, $b));
-                        sp = sp.sub(1);
-                        *sp.sub(1) = r;
-                    }
-                }};
-            }
-            macro_rules! compare {
-                ($kind:expr, $a:ident, $b:ident, $fast:expr) => {{
-                    let $b = peek!(0);
-                    let $a = peek!(1);
-                    let r = if $a.is_num() && $b.is_num() {
-                        let ($a, $b) = ($a.as_num(), $b.as_num());
-                        $fast
-                    } else {
-                        protect!(self.compare_slow($kind, $a, $b))
-                    };
-                    sp = sp.sub(1);
-                    *sp.sub(1) = Value::bool(r);
-                }};
-            }
-            // value comparison used by the fused compare+jump ops
-            macro_rules! cmp_val {
-                ($kind:expr, $va:expr, $vb:expr, $fast:expr) => {{
-                    let (a, b) = ($va, $vb);
-                    if a.is_num() && b.is_num() {
-                        let f = $fast;
-                        f(a.as_num(), b.as_num())
-                    } else {
-                        protect!(self.compare_slow($kind, a, b))
-                    }
-                }};
-            }
-            macro_rules! jnot_stack {
-                ($kind:expr, $o:expr, $fast:expr) => {{
-                    let b = peek!(0);
-                    let a = peek!(1);
-                    let t = cmp_val!($kind, a, b, $fast);
-                    sp = sp.sub(2);
-                    if !t {
-                        jump!($o);
-                    }
-                }};
-            }
-            // the offset of a double instruction lives in the word after it
+            // the offset / payload of a double instruction lives in the word after it
             macro_rules! ext {
                 () => {{
                     let w = *ip;
@@ -1730,29 +1694,99 @@ impl Vm {
                     w.simm24()
                 }};
             }
-            macro_rules! jnot_ll {
-                ($kind:expr, $a:expr, $b:expr, $fast:expr) => {{
+            macro_rules! payload {
+                () => {{
+                    let w = *ip;
+                    ip = ip.add(1);
+                    w.payload()
+                }};
+            }
+            // `R[a] = x <op> y`: numbers inline, operator hooks written in Kite run as calls
+            // inside this loop (their result lands in `R[a]` when they return), the rest is slow
+            macro_rules! arith {
+                ($kind:expr, $a:expr, $x:expr, $y:expr, $fast:expr) => {{
+                    let (xv, yv): (Value, Value) = ($x, $y);
+                    if xv.is_num() && yv.is_num() {
+                        reg!($a) = Value::num(($fast)(xv.as_num(), yv.as_num()));
+                    } else if let Some(cl) = self.arith_hook_closure($kind, xv, yv) {
+                        // stage [hook, x, y] just above the frame
+                        let top = self.sp;
+                        *top = Value::from(cl);
+                        *top.add(1) = xv;
+                        *top.add(2) = yv;
+                        sync!();
+                        self.push_frame(cl, top.add(1), 2, $a as u32)?;
+                        reload_nosp!();
+                    } else {
+                        sync!();
+                        reg!($a) = self.arith_slow($kind, xv, yv)?;
+                        gc_check!();
+                    }
+                }};
+            }
+            macro_rules! bitop {
+                ($kind:expr, $a:expr, $x:expr, $y:expr, $fast:expr) => {{
+                    let (xv, yv): (Value, Value) = ($x, $y);
+                    if xv.is_num() && yv.is_num() {
+                        reg!($a) = Value::num(($fast)(xv.as_num() as i64, yv.as_num() as i64) as f64);
+                    } else {
+                        sync!();
+                        reg!($a) = self.arith_slow($kind, xv, yv)?;
+                    }
+                }};
+            }
+            // `R[a] = x <cmp> y`
+            macro_rules! compare {
+                ($kind:expr, $a:expr, $x:expr, $y:expr, $fast:expr) => {{
+                    let (xv, yv): (Value, Value) = ($x, $y);
+                    let r = if xv.is_num() && yv.is_num() {
+                        ($fast)(xv.as_num(), yv.as_num())
+                    } else {
+                        sync!();
+                        self.compare_slow($kind, xv, yv)?
+                    };
+                    reg!($a) = Value::bool(r);
+                }};
+            }
+            // jump if `x <cmp> y` equals `$want`
+            macro_rules! jcmp {
+                ($kind:expr, $x:expr, $y:expr, $want:expr, $fast:expr) => {{
                     let o = ext!();
-                    let t = cmp_val!($kind, *base.add($a as usize), *base.add($b as usize), $fast);
-                    if !t {
+                    let (xv, yv): (Value, Value) = ($x, $y);
+                    let t = if xv.is_num() && yv.is_num() {
+                        ($fast)(xv.as_num(), yv.as_num())
+                    } else {
+                        sync!();
+                        self.compare_slow($kind, xv, yv)?
+                    };
+                    if t == $want {
                         jump!(o);
                     }
                 }};
             }
-            macro_rules! jnot_lk {
-                ($kind:expr, $a:expr, $k:expr, $fast:expr) => {{
+            // `==` / `!=`: immediates compare by their bits, only objects need the slow path
+            macro_rules! jeq {
+                ($x:expr, $y:expr, $want:expr) => {{
                     let o = ext!();
-                    let t = cmp_val!($kind, *base.add($a as usize), *consts.add($k as usize), $fast);
-                    if !t {
+                    let (xv, yv): (Value, Value) = ($x, $y);
+                    let t = if xv.is_num() && yv.is_num() {
+                        xv.as_num() == yv.as_num()
+                    } else if !xv.is_obj() && !yv.is_obj() {
+                        xv.bits() == yv.bits()
+                    } else {
+                        sync!();
+                        self.values_equal(xv, yv)?
+                    };
+                    if t == $want {
                         jump!(o);
                     }
                 }};
             }
             // read `obj.name` where `name` is the interned string constant `k`
             macro_rules! get_field {
-                ($obj:expr, $k:expr) => {{
+                ($obj:expr, $key:expr) => {{
                     let obj: Value = $obj;
-                    let key = (*consts.add($k)).as_gc_unchecked::<Str>();
+                    let key = ($key).as_gc_unchecked::<Str>();
                     match obj.obj_kind() {
                         Some(Kind::Table) => obj.as_gc_unchecked::<Table>().get_str(key),
                         Some(Kind::Instance) => {
@@ -1766,42 +1800,55 @@ impl Vm {
                     }
                 }};
             }
-            macro_rules! enter_closure {
-                ($cl:expr, $argc:expr) => {{
-                    self.push_frame($cl, $argc)?;
-                    sp = self.sp;
-                    reload!();
+            macro_rules! set_field {
+                ($obj:expr, $key:expr, $v:expr) => {{
+                    let (obj, v): (Value, Value) = ($obj, $v);
+                    let key = ($key).as_gc_unchecked::<Str>();
+                    let mut done = false;
+                    if let Some(mut inst) = obj.as_gc::<Instance>() {
+                        if let Some(i) = inst.ty.field_index(key) {
+                            *inst.fields.get_unchecked_mut(i) = v;
+                            done = true;
+                        }
+                    }
+                    if !done {
+                        protect!(self.set_field_slow(obj, key, v));
+                    }
+                    gc_check!();
                 }};
             }
-            macro_rules! call_generic {
-                ($argc:expr) => {{
-                    let argc: usize = $argc;
+            macro_rules! init_field {
+                ($t:expr, $key:expr, $v:expr) => {{
+                    let mut t = ($t).as_gc_unchecked::<Table>();
+                    let before = t.mem_size();
+                    let _ = t.set($key, $v);
+                    self.heap.bytes += t.mem_size().saturating_sub(before);
+                }};
+            }
+            // call the value in register `a` with `n` arguments behind it; the result replaces it
+            macro_rules! call_reg {
+                ($a:expr, $n:expr) => {{
+                    let a = $a as usize;
+                    let n = $n as usize;
+                    let slot = base.add(a);
+                    let callee = *slot;
                     sync!();
-                    let callee = *sp.sub(argc + 1);
                     if callee.is_kind(Kind::Closure) {
-                        enter_closure!(callee.as_gc_unchecked::<Closure>(), argc);
+                        self.push_frame(callee.as_gc_unchecked::<Closure>(), slot.add(1), n, a as u32)?;
+                        reload_nosp!();
                     } else if callee.is_kind(Kind::Native)
                         && (callee.as_gc_unchecked::<Native>().arity < 0
-                            || callee.as_gc_unchecked::<Native>().arity as usize == argc)
+                            || callee.as_gc_unchecked::<Native>().arity as usize == n)
                     {
                         // a native with a matching arity: call it straight from the loop
                         let nat = callee.as_gc_unchecked::<Native>();
-                        let args = std::slice::from_raw_parts(sp.sub(argc), argc);
-                        let r = (nat.func)(self, args)?;
-                        sp = sp.sub(argc);
-                        *sp.sub(1) = r;
-                        self.sp = sp;
+                        let args = std::slice::from_raw_parts(slot.add(1), n);
+                        *slot = (nat.func)(self, args)?;
                         gc_check!();
                     } else {
-                        match self.call_value_at(argc) {
-                            Ok(true) => {
-                                sp = self.sp;
-                                reload!();
-                            }
-                            Ok(false) => {
-                                sp = self.sp;
-                                gc_check!();
-                            }
+                        match self.call_at(slot, n, a as u32) {
+                            Ok(true) => reload_nosp!(),
+                            Ok(false) => gc_check!(),
                             Err(e) => return Err(e),
                         }
                     }
@@ -1813,14 +1860,15 @@ impl Vm {
                     if !self.open_upvals.is_empty() {
                         self.close_upvalues(base);
                     }
+                    let ret = (*frame).ret;
                     self.frames.pop();
-                    sp = base.sub(1);
                     if self.frames.len() == stop {
-                        self.sp = sp;
+                        // back to the register the caller of `run` staged the callee in
+                        self.sp = base.sub(1);
                         return Ok(result);
                     }
-                    push!(result);
                     reload!();
+                    reg!(ret) = result;
                 }};
             }
 
@@ -1830,425 +1878,203 @@ impl Vm {
                 #[cfg(feature = "op-profile")]
                 crate::profile::record(&op);
                 match op {
-                    // ---- constants & stack
-                    Op::Nil => push!(Value::NIL),
-                    Op::True => push!(Value::TRUE),
-                    Op::False => push!(Value::FALSE),
-                    Op::Const(_) => push!(*consts.add(op.imm24() as usize)),
-                    Op::Pop => sp = sp.sub(1),
-                    Op::PopN(n) => sp = sp.sub(n as usize),
-                    Op::Dup => {
-                        let v = top!();
-                        push!(v);
+                    // ---- moves and constants
+                    Op::Move(a, b) => reg!(a) = reg!(b),
+                    Op::LoadK(a, k) => reg!(a) = konst!(k),
+                    Op::LoadKW(a) => {
+                        let k = payload!();
+                        reg!(a) = konst!(k);
                     }
-                    Op::Dup2 => {
-                        let (a, b) = (peek!(1), peek!(0));
-                        push!(a);
-                        push!(b);
+                    Op::LoadI(a, i) => reg!(a) = Value::num(i as f64),
+                    Op::LoadNil(a, n) => {
+                        for i in 0..=n as usize {
+                            reg!(a as usize + i) = Value::NIL;
+                        }
                     }
+                    Op::LoadTrue(a) => reg!(a) = Value::TRUE,
+                    Op::LoadFalse(a) => reg!(a) = Value::FALSE,
 
-                    // ---- variables
-                    Op::GetLocal(i) => push!(*base.add(i as usize)),
-                    Op::SetLocal(i) => *base.add(i as usize) = top!(),
-                    Op::StoreLocal(i) => {
-                        sp = sp.sub(1);
-                        *base.add(i as usize) = *sp;
-                    }
-                    Op::GetLocal2(a, b) => {
-                        push!(*base.add(a as usize));
-                        push!(*base.add(b as usize));
-                    }
-                    // `x = a <op> b` fused with its store.  The word after these ops is the plain
-                    // `StoreLocal(d)`: the numeric fast path stores directly and skips it; the
-                    // operator-hook path pushes the hook's result and falls into it.
-                    Op::AddLLS(a, b, d) => {
-                        let (x, y) = (*base.add(a as usize), *base.add(b as usize));
-                        if x.is_num() && y.is_num() {
-                            *base.add(d as usize) = Value::num(x.as_num() + y.as_num());
-                            ip = ip.add(1);
-                        } else if let Some(cl) = self.arith_hook_closure(Arith::Add, x, y) {
-                            *sp = Value::from(cl);
-                            *sp.add(1) = x;
-                            *sp.add(2) = y;
-                            sp = sp.add(3);
-                            sync!();
-                            enter_closure!(cl, 2);
-                        } else {
-                            let r = protect!(self.arith_slow(Arith::Add, x, y));
-                            push!(r);
-                            gc_check!();
-                        }
-                    }
-                    Op::SubLLS(a, b, d) => {
-                        let (x, y) = (*base.add(a as usize), *base.add(b as usize));
-                        if x.is_num() && y.is_num() {
-                            *base.add(d as usize) = Value::num(x.as_num() - y.as_num());
-                            ip = ip.add(1);
-                        } else if let Some(cl) = self.arith_hook_closure(Arith::Sub, x, y) {
-                            *sp = Value::from(cl);
-                            *sp.add(1) = x;
-                            *sp.add(2) = y;
-                            sp = sp.add(3);
-                            sync!();
-                            enter_closure!(cl, 2);
-                        } else {
-                            let r = protect!(self.arith_slow(Arith::Sub, x, y));
-                            push!(r);
-                            gc_check!();
-                        }
-                    }
-                    Op::MulLLS(a, b, d) => {
-                        let (x, y) = (*base.add(a as usize), *base.add(b as usize));
-                        if x.is_num() && y.is_num() {
-                            *base.add(d as usize) = Value::num(x.as_num() * y.as_num());
-                            ip = ip.add(1);
-                        } else if let Some(cl) = self.arith_hook_closure(Arith::Mul, x, y) {
-                            *sp = Value::from(cl);
-                            *sp.add(1) = x;
-                            *sp.add(2) = y;
-                            sp = sp.add(3);
-                            sync!();
-                            enter_closure!(cl, 2);
-                        } else {
-                            let r = protect!(self.arith_slow(Arith::Mul, x, y));
-                            push!(r);
-                            gc_check!();
-                        }
-                    }
-                    Op::AddS(d) => {
-                        let (x, y) = (peek!(1), peek!(0));
-                        if x.is_num() && y.is_num() {
-                            sp = sp.sub(2);
-                            *base.add(d as usize) = Value::num(x.as_num() + y.as_num());
-                            ip = ip.add(1);
-                        } else if let Some(cl) = self.arith_hook_closure(Arith::Add, x, y) {
-                            // [a, b] -> [hook, a, b]
-                            *sp = y;
-                            *sp.sub(1) = x;
-                            *sp.sub(2) = Value::from(cl);
-                            sp = sp.add(1);
-                            sync!();
-                            enter_closure!(cl, 2);
-                        } else {
-                            let r = protect!(self.arith_slow(Arith::Add, x, y));
-                            sp = sp.sub(1);
-                            *sp.sub(1) = r;
-                            gc_check!();
-                        }
-                    }
-                    Op::SubS(d) => {
-                        let (x, y) = (peek!(1), peek!(0));
-                        if x.is_num() && y.is_num() {
-                            sp = sp.sub(2);
-                            *base.add(d as usize) = Value::num(x.as_num() - y.as_num());
-                            ip = ip.add(1);
-                        } else if let Some(cl) = self.arith_hook_closure(Arith::Sub, x, y) {
-                            // [a, b] -> [hook, a, b]
-                            *sp = y;
-                            *sp.sub(1) = x;
-                            *sp.sub(2) = Value::from(cl);
-                            sp = sp.add(1);
-                            sync!();
-                            enter_closure!(cl, 2);
-                        } else {
-                            let r = protect!(self.arith_slow(Arith::Sub, x, y));
-                            sp = sp.sub(1);
-                            *sp.sub(1) = r;
-                            gc_check!();
-                        }
-                    }
-                    Op::MulS(d) => {
-                        let (x, y) = (peek!(1), peek!(0));
-                        if x.is_num() && y.is_num() {
-                            sp = sp.sub(2);
-                            *base.add(d as usize) = Value::num(x.as_num() * y.as_num());
-                            ip = ip.add(1);
-                        } else if let Some(cl) = self.arith_hook_closure(Arith::Mul, x, y) {
-                            // [a, b] -> [hook, a, b]
-                            *sp = y;
-                            *sp.sub(1) = x;
-                            *sp.sub(2) = Value::from(cl);
-                            sp = sp.add(1);
-                            sync!();
-                            enter_closure!(cl, 2);
-                        } else {
-                            let r = protect!(self.arith_slow(Arith::Mul, x, y));
-                            sp = sp.sub(1);
-                            *sp.sub(1) = r;
-                            gc_check!();
-                        }
-                    }
-                    Op::AddLL(a, b) => {
-                        let (x, y) = (*base.add(a as usize), *base.add(b as usize));
-                        if x.is_num() && y.is_num() {
-                            push!(Value::num(x.as_num() + y.as_num()));
-                        } else if let Some(cl) = self.arith_hook_closure(Arith::Add, x, y) {
-                            // operator hook written in Kite: run it as a call, no nested interpreter
-                            *sp = Value::from(cl);
-                            *sp.add(1) = x;
-                            *sp.add(2) = y;
-                            sp = sp.add(3);
-                            sync!();
-                            enter_closure!(cl, 2);
-                        } else {
-                            let r = protect!(self.arith_slow(Arith::Add, x, y));
-                            push!(r);
-                            gc_check!();
-                        }
-                    }
-                    Op::SubLL(a, b) => {
-                        let (x, y) = (*base.add(a as usize), *base.add(b as usize));
-                        if x.is_num() && y.is_num() {
-                            push!(Value::num(x.as_num() - y.as_num()));
-                        } else if let Some(cl) = self.arith_hook_closure(Arith::Sub, x, y) {
-                            // operator hook written in Kite: run it as a call, no nested interpreter
-                            *sp = Value::from(cl);
-                            *sp.add(1) = x;
-                            *sp.add(2) = y;
-                            sp = sp.add(3);
-                            sync!();
-                            enter_closure!(cl, 2);
-                        } else {
-                            let r = protect!(self.arith_slow(Arith::Sub, x, y));
-                            push!(r);
-                        }
-                    }
-                    Op::MulLL(a, b) => {
-                        let (x, y) = (*base.add(a as usize), *base.add(b as usize));
-                        if x.is_num() && y.is_num() {
-                            push!(Value::num(x.as_num() * y.as_num()));
-                        } else if let Some(cl) = self.arith_hook_closure(Arith::Mul, x, y) {
-                            // operator hook written in Kite: run it as a call, no nested interpreter
-                            *sp = Value::from(cl);
-                            *sp.add(1) = x;
-                            *sp.add(2) = y;
-                            sp = sp.add(3);
-                            sync!();
-                            enter_closure!(cl, 2);
-                        } else {
-                            let r = protect!(self.arith_slow(Arith::Mul, x, y));
-                            push!(r);
-                        }
-                    }
-                    Op::GetUpval(i) => {
+                    // ---- upvalues and globals
+                    Op::GetUpval(a, i) => {
                         let uv = *closure!().upvals.get_unchecked(i as usize);
-                        push!(*uv.location);
+                        reg!(a) = *uv.location;
                     }
-                    Op::SetUpval(i) => {
+                    Op::SetUpval(a, i) => {
                         let uv = *closure!().upvals.get_unchecked(i as usize);
                         let loc = uv.location;
-                        *loc = top!();
+                        *loc = reg!(a);
                     }
-                    Op::StoreUpval(i) => {
-                        let uv = *closure!().upvals.get_unchecked(i as usize);
-                        let loc = uv.location;
-                        *loc = pop!();
-                    }
-                    Op::GetGlobal(_) => {
-                        let v = *self.globals.get_unchecked(op.imm24() as usize);
+                    Op::GetGlobal(a, s) => {
+                        let v = *self.globals.get_unchecked(s as usize);
                         if v == Value::UNDEF {
-                            throw!("undefined variable '{}'", self.interner.get(Sym(op.imm24())));
+                            throw!("undefined variable '{}'", self.interner.get(Sym(s as u32)));
                         }
-                        push!(v);
+                        reg!(a) = v;
                     }
-                    Op::SetGlobal(_) => {
-                        let slot = self.globals.get_unchecked_mut(op.imm24() as usize);
+                    Op::GetGlobalW(a) => {
+                        let s = payload!();
+                        let v = *self.globals.get_unchecked(s as usize);
+                        if v == Value::UNDEF {
+                            throw!("undefined variable '{}'", self.interner.get(Sym(s)));
+                        }
+                        reg!(a) = v;
+                    }
+                    Op::SetGlobal(a, s) => {
+                        let slot = self.globals.get_unchecked_mut(s as usize);
                         if *slot == Value::UNDEF {
-                            throw!("assignment to undefined variable '{}'", self.interner.get(Sym(op.imm24())));
+                            throw!("assignment to undefined variable '{}'", self.interner.get(Sym(s as u32)));
                         }
-                        *slot = top!();
+                        *slot = reg!(a);
                     }
-                    Op::StoreGlobal(_) => {
-                        let v = pop!();
-                        let slot = self.globals.get_unchecked_mut(op.imm24() as usize);
+                    Op::SetGlobalW(a) => {
+                        let s = payload!();
+                        let slot = self.globals.get_unchecked_mut(s as usize);
                         if *slot == Value::UNDEF {
-                            throw!("assignment to undefined variable '{}'", self.interner.get(Sym(op.imm24())));
+                            throw!("assignment to undefined variable '{}'", self.interner.get(Sym(s)));
                         }
-                        *slot = v;
+                        *slot = reg!(a);
                     }
-                    Op::DefGlobal(_) => {
-                        let v = pop!();
-                        *self.globals.get_unchecked_mut(op.imm24() as usize) = v;
+                    Op::DefGlobal(a, s) => *self.globals.get_unchecked_mut(s as usize) = reg!(a),
+                    Op::DefGlobalW(a) => {
+                        let s = payload!();
+                        *self.globals.get_unchecked_mut(s as usize) = reg!(a);
                     }
-                    Op::CloseUpvals(n) => {
+                    Op::CloseUpvals(a) => {
                         if !self.open_upvals.is_empty() {
-                            self.close_upvalues(base.add(n as usize));
+                            self.close_upvalues(base.add(a as usize));
                         }
                     }
 
                     // ---- arithmetic
-                    Op::Add => {
-                        let b = peek!(0);
-                        let a = peek!(1);
-                        if a.is_num() && b.is_num() {
-                            sp = sp.sub(1);
-                            *sp.sub(1) = Value::num(a.as_num() + b.as_num());
+                    Op::Add(a, b, c) => arith!(Arith::Add, a, reg!(b), reg!(c), |x: f64, y: f64| x + y),
+                    Op::Sub(a, b, c) => arith!(Arith::Sub, a, reg!(b), reg!(c), |x: f64, y: f64| x - y),
+                    Op::Mul(a, b, c) => arith!(Arith::Mul, a, reg!(b), reg!(c), |x: f64, y: f64| x * y),
+                    Op::Div(a, b, c) => arith!(Arith::Div, a, reg!(b), reg!(c), |x: f64, y: f64| x / y),
+                    Op::Rem(a, b, c) => arith!(Arith::Rem, a, reg!(b), reg!(c), rem_f64),
+                    Op::Pow(a, b, c) => arith!(Arith::Pow, a, reg!(b), reg!(c), |x: f64, y: f64| x.powf(y)),
+                    Op::AddK(a, b, k) => arith!(Arith::Add, a, reg!(b), konst!(k), |x: f64, y: f64| x + y),
+                    Op::SubK(a, b, k) => arith!(Arith::Sub, a, reg!(b), konst!(k), |x: f64, y: f64| x - y),
+                    Op::MulK(a, b, k) => arith!(Arith::Mul, a, reg!(b), konst!(k), |x: f64, y: f64| x * y),
+                    Op::DivK(a, b, k) => arith!(Arith::Div, a, reg!(b), konst!(k), |x: f64, y: f64| x / y),
+                    Op::RemK(a, b, k) => arith!(Arith::Rem, a, reg!(b), konst!(k), rem_f64),
+                    Op::BitAnd(a, b, c) => bitop!(Arith::BitAnd, a, reg!(b), reg!(c), |x: i64, y: i64| x & y),
+                    Op::BitOr(a, b, c) => bitop!(Arith::BitOr, a, reg!(b), reg!(c), |x: i64, y: i64| x | y),
+                    Op::BitXor(a, b, c) => bitop!(Arith::BitXor, a, reg!(b), reg!(c), |x: i64, y: i64| x ^ y),
+                    Op::Shl(a, b, c) => {
+                        bitop!(Arith::Shl, a, reg!(b), reg!(c), |x: i64, y: i64| x.wrapping_shl((y & 63) as u32))
+                    }
+                    Op::Shr(a, b, c) => {
+                        bitop!(Arith::Shr, a, reg!(b), reg!(c), |x: i64, y: i64| x.wrapping_shr((y & 63) as u32))
+                    }
+                    Op::Neg(a, b) => {
+                        let x = reg!(b);
+                        if x.is_num() {
+                            reg!(a) = Value::num(-x.as_num());
                         } else {
-                            let r = protect!(self.arith_slow(Arith::Add, a, b));
-                            sp = sp.sub(1);
-                            *sp.sub(1) = r;
-                            gc_check!();
+                            reg!(a) = protect!(self.neg_slow(x));
                         }
                     }
-                    Op::Sub => arith!(Arith::Sub, a, b, a - b),
-                    Op::Mul => arith!(Arith::Mul, a, b, a * b),
-                    Op::Div => arith!(Arith::Div, a, b, a / b),
-                    Op::Rem => arith!(Arith::Rem, a, b, rem_f64(a, b)),
-                    Op::Pow => arith!(Arith::Pow, a, b, a.powf(b)),
-                    Op::AddK(_) => arith_k!(Arith::Add, op.imm24(), a, b, a + b),
-                    Op::SubK(_) => arith_k!(Arith::Sub, op.imm24(), a, b, a - b),
-                    Op::MulK(_) => arith_k!(Arith::Mul, op.imm24(), a, b, a * b),
-                    Op::DivK(_) => arith_k!(Arith::Div, op.imm24(), a, b, a / b),
-                    Op::RemK(_) => arith_k!(Arith::Rem, op.imm24(), a, b, rem_f64(a, b)),
-                    Op::AddLocalK(s, k) => {
-                        let slot = base.add(s as usize);
-                        let a = *slot;
-                        let kv = *consts.add(k as usize);
-                        if a.is_num() {
-                            *slot = Value::num(a.as_num() + kv.as_num());
+                    Op::Not(a, b) => reg!(a) = Value::bool(reg!(b).is_falsy()),
+                    Op::BitNot(a, b) => {
+                        let x = reg!(b);
+                        if x.is_num() {
+                            reg!(a) = Value::num(!(x.as_num() as i64) as f64);
                         } else {
-                            let r = protect!(self.arith_slow(Arith::Add, a, kv));
-                            *slot = r;
-                            gc_check!();
+                            throw!("invalid operand for '~': {}", self.type_of(x));
                         }
                     }
-                    Op::Neg => {
-                        let a = top!();
-                        if a.is_num() {
-                            *sp.sub(1) = Value::num(-a.as_num());
-                        } else {
-                            let r = protect!(self.neg_slow(a));
-                            *sp.sub(1) = r;
-                        }
-                    }
-                    Op::Not => {
-                        let a = top!();
-                        *sp.sub(1) = Value::bool(a.is_falsy());
-                    }
-                    Op::BitNot => {
-                        let a = top!();
-                        if a.is_num() {
-                            *sp.sub(1) = Value::num(!(a.as_num() as i64) as f64);
-                        } else {
-                            throw!("invalid operand for '~': {}", self.type_of(a));
-                        }
-                    }
-                    Op::BitAnd => bitop!(Arith::BitAnd, a, b, a & b),
-                    Op::BitOr => bitop!(Arith::BitOr, a, b, a | b),
-                    Op::BitXor => bitop!(Arith::BitXor, a, b, a ^ b),
-                    Op::Shl => bitop!(Arith::Shl, a, b, a.wrapping_shl((b & 63) as u32)),
-                    Op::Shr => bitop!(Arith::Shr, a, b, a.wrapping_shr((b & 63) as u32)),
 
-                    // ---- comparison
-                    Op::Eq => {
-                        let b = peek!(0);
-                        let a = peek!(1);
-                        let r = if a.is_num() && b.is_num() {
-                            a.as_num() == b.as_num()
-                        } else if !a.is_obj() && !b.is_obj() {
-                            a.bits() == b.bits()
+                    // ---- comparisons producing a bool
+                    Op::Eq(a, b, c) => {
+                        let (x, y) = (reg!(b), reg!(c));
+                        let r = if x.is_num() && y.is_num() {
+                            x.as_num() == y.as_num()
+                        } else if !x.is_obj() && !y.is_obj() {
+                            x.bits() == y.bits()
                         } else {
-                            protect!(self.values_equal(a, b))
+                            protect!(self.values_equal(x, y))
                         };
-                        sp = sp.sub(1);
-                        *sp.sub(1) = Value::bool(r);
+                        reg!(a) = Value::bool(r);
                     }
-                    Op::Ne => {
-                        let b = peek!(0);
-                        let a = peek!(1);
-                        let r = if a.is_num() && b.is_num() {
-                            a.as_num() != b.as_num()
-                        } else if !a.is_obj() && !b.is_obj() {
-                            a.bits() != b.bits()
+                    Op::Ne(a, b, c) => {
+                        let (x, y) = (reg!(b), reg!(c));
+                        let r = if x.is_num() && y.is_num() {
+                            x.as_num() != y.as_num()
+                        } else if !x.is_obj() && !y.is_obj() {
+                            x.bits() != y.bits()
                         } else {
-                            !protect!(self.values_equal(a, b))
+                            !protect!(self.values_equal(x, y))
                         };
-                        sp = sp.sub(1);
-                        *sp.sub(1) = Value::bool(r);
+                        reg!(a) = Value::bool(r);
                     }
-                    Op::Lt => compare!(Cmp::Lt, a, b, a < b),
-                    Op::Le => compare!(Cmp::Le, a, b, a <= b),
-                    Op::Gt => compare!(Cmp::Gt, a, b, a > b),
-                    Op::Ge => compare!(Cmp::Ge, a, b, a >= b),
+                    Op::Lt(a, b, c) => compare!(Cmp::Lt, a, reg!(b), reg!(c), |x: f64, y: f64| x < y),
+                    Op::Le(a, b, c) => compare!(Cmp::Le, a, reg!(b), reg!(c), |x: f64, y: f64| x <= y),
+                    Op::Gt(a, b, c) => compare!(Cmp::Gt, a, reg!(b), reg!(c), |x: f64, y: f64| x > y),
+                    Op::Ge(a, b, c) => compare!(Cmp::Ge, a, reg!(b), reg!(c), |x: f64, y: f64| x >= y),
 
                     // ---- jumps
                     Op::Jump(_) => jump!(op.simm24()),
-                    Op::JumpIfFalse(_) => {
-                        sp = sp.sub(1);
-                        if (*sp).is_falsy() {
-                            jump!(op.simm24());
+                    Op::JTrue(a) => {
+                        let o = ext!();
+                        if reg!(a).is_truthy() {
+                            jump!(o);
                         }
                     }
-                    Op::JumpIfTrue(_) => {
-                        sp = sp.sub(1);
-                        if (*sp).is_truthy() {
-                            jump!(op.simm24());
+                    Op::JFalse(a) => {
+                        let o = ext!();
+                        if reg!(a).is_falsy() {
+                            jump!(o);
                         }
                     }
-                    Op::And(_) => {
-                        if top!().is_falsy() {
-                            jump!(op.simm24());
-                        } else {
-                            sp = sp.sub(1);
-                        }
-                    }
-                    Op::Or(_) => {
-                        if top!().is_truthy() {
-                            jump!(op.simm24());
-                        } else {
-                            sp = sp.sub(1);
-                        }
-                    }
-                    Op::JNotEq(_) => jnot_stack!(Cmp::Eq, op.simm24(), |a, b| a == b),
-                    Op::JNotNe(_) => jnot_stack!(Cmp::Ne, op.simm24(), |a, b| a != b),
-                    Op::JNotLt(_) => jnot_stack!(Cmp::Lt, op.simm24(), |a, b| a < b),
-                    Op::JNotLe(_) => jnot_stack!(Cmp::Le, op.simm24(), |a, b| a <= b),
-                    Op::JNotGt(_) => jnot_stack!(Cmp::Gt, op.simm24(), |a, b| a > b),
-                    Op::JNotGe(_) => jnot_stack!(Cmp::Ge, op.simm24(), |a, b| a >= b),
-                    Op::JNotEqLL(a, b) => jnot_ll!(Cmp::Eq, a, b, |x, y| x == y),
-                    Op::JNotNeLL(a, b) => jnot_ll!(Cmp::Ne, a, b, |x, y| x != y),
-                    Op::JNotLtLL(a, b) => jnot_ll!(Cmp::Lt, a, b, |x, y| x < y),
-                    Op::JNotLeLL(a, b) => jnot_ll!(Cmp::Le, a, b, |x, y| x <= y),
-                    Op::JNotGtLL(a, b) => jnot_ll!(Cmp::Gt, a, b, |x, y| x > y),
-                    Op::JNotGeLL(a, b) => jnot_ll!(Cmp::Ge, a, b, |x, y| x >= y),
-                    Op::JNotEqLK(a, k) => jnot_lk!(Cmp::Eq, a, k, |x, y| x == y),
-                    Op::JNotNeLK(a, k) => jnot_lk!(Cmp::Ne, a, k, |x, y| x != y),
-                    Op::JNotLtLK(a, k) => jnot_lk!(Cmp::Lt, a, k, |x, y| x < y),
-                    Op::JNotLeLK(a, k) => jnot_lk!(Cmp::Le, a, k, |x, y| x <= y),
-                    Op::JNotGtLK(a, k) => jnot_lk!(Cmp::Gt, a, k, |x, y| x > y),
-                    Op::JNotGeLK(a, k) => jnot_lk!(Cmp::Ge, a, k, |x, y| x >= y),
+                    Op::JEq(a, b) => jeq!(reg!(a), reg!(b), true),
+                    Op::JNe(a, b) => jeq!(reg!(a), reg!(b), false),
+                    Op::JLt(a, b) => jcmp!(Cmp::Lt, reg!(a), reg!(b), true, |x: f64, y: f64| x < y),
+                    Op::JNotLt(a, b) => jcmp!(Cmp::Lt, reg!(a), reg!(b), false, |x: f64, y: f64| x < y),
+                    Op::JLe(a, b) => jcmp!(Cmp::Le, reg!(a), reg!(b), true, |x: f64, y: f64| x <= y),
+                    Op::JNotLe(a, b) => jcmp!(Cmp::Le, reg!(a), reg!(b), false, |x: f64, y: f64| x <= y),
+                    Op::JGt(a, b) => jcmp!(Cmp::Gt, reg!(a), reg!(b), true, |x: f64, y: f64| x > y),
+                    Op::JNotGt(a, b) => jcmp!(Cmp::Gt, reg!(a), reg!(b), false, |x: f64, y: f64| x > y),
+                    Op::JGe(a, b) => jcmp!(Cmp::Ge, reg!(a), reg!(b), true, |x: f64, y: f64| x >= y),
+                    Op::JNotGe(a, b) => jcmp!(Cmp::Ge, reg!(a), reg!(b), false, |x: f64, y: f64| x >= y),
+                    Op::JEqK(a, k) => jeq!(reg!(a), konst!(k), true),
+                    Op::JNeK(a, k) => jeq!(reg!(a), konst!(k), false),
+                    Op::JLtK(a, k) => jcmp!(Cmp::Lt, reg!(a), konst!(k), true, |x: f64, y: f64| x < y),
+                    Op::JNotLtK(a, k) => jcmp!(Cmp::Lt, reg!(a), konst!(k), false, |x: f64, y: f64| x < y),
+                    Op::JLeK(a, k) => jcmp!(Cmp::Le, reg!(a), konst!(k), true, |x: f64, y: f64| x <= y),
+                    Op::JNotLeK(a, k) => jcmp!(Cmp::Le, reg!(a), konst!(k), false, |x: f64, y: f64| x <= y),
+                    Op::JGtK(a, k) => jcmp!(Cmp::Gt, reg!(a), konst!(k), true, |x: f64, y: f64| x > y),
+                    Op::JNotGtK(a, k) => jcmp!(Cmp::Gt, reg!(a), konst!(k), false, |x: f64, y: f64| x > y),
+                    Op::JGeK(a, k) => jcmp!(Cmp::Ge, reg!(a), konst!(k), true, |x: f64, y: f64| x >= y),
+                    Op::JNotGeK(a, k) => jcmp!(Cmp::Ge, reg!(a), konst!(k), false, |x: f64, y: f64| x >= y),
 
                     // ---- calls
-                    Op::Call(argc) => call_generic!(argc as usize),
-                    Op::TailCall(argc) => {
-                        let argc = argc as usize;
-                        let callee = *sp.sub(argc + 1);
-                        match callee.as_gc::<Closure>() {
-                            Some(cl) if cl.proto.arity as usize == argc => {
+                    Op::Call(a, n) => call_reg!(a, n),
+                    Op::TailCall(a, n) => {
+                        let n = n as usize;
+                        let slot = base.add(a as usize);
+                        match (*slot).as_gc::<Closure>() {
+                            Some(cl) if cl.proto.arity as usize == n => {
                                 if !self.open_upvals.is_empty() {
                                     self.close_upvalues(base);
                                 }
-                                let dst = base.sub(1);
-                                std::ptr::copy(sp.sub(argc + 1), dst, argc + 1);
-                                sp = dst.add(argc + 1);
-                                self.sp = sp;
+                                // the callee replaces this frame: its arguments move down to our base
+                                let ret = (*frame).ret;
+                                std::ptr::copy(slot.add(1), base, n);
                                 self.frames.pop();
-                                enter_closure!(cl, argc);
+                                self.push_frame(cl, base, n, ret)?;
+                                reload_nosp!();
                             }
-                            _ => call_generic!(argc),
+                            // not a plain closure: an ordinary call, then the `Return` that follows
+                            _ => call_reg!(a, n),
                         }
                     }
-                    Op::Return => {
-                        let r = pop!();
+                    Op::Return(a) => {
+                        let r = reg!(a);
                         do_return!(r);
                     }
                     Op::ReturnNil => do_return!(Value::NIL),
-                    Op::ReturnLocal(s) => {
-                        let r = *base.add(s as usize);
-                        do_return!(r);
-                    }
-                    Op::Closure(_) => {
-                        let proto = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<Proto>();
+                    Op::Closure(a, p) => {
+                        let proto = *closure!().proto.protos.get_unchecked(p as usize);
                         let mut ups: Vec<Gc<Upvalue>> = Vec::with_capacity(proto.upvals.len());
                         for d in proto.upvals.iter() {
                             if d.is_local {
@@ -2262,40 +2088,36 @@ impl Vm {
                             proto,
                             upvals: ups.into_boxed_slice(),
                         });
-                        push!(Value::from(cl));
+                        reg!(a) = Value::from(cl);
                         gc_check!();
                     }
 
-                    // ---- tables
-                    Op::NewTable(n) => {
+                    // ---- tables and arrays
+                    Op::NewTable(a, n) => {
                         let t = self.heap.new_table(n as usize);
-                        push!(Value::from(t));
+                        reg!(a) = Value::from(t);
                         gc_check!();
                     }
-                    Op::NewArray(n) => {
-                        let a = self.heap.new_array(Vec::with_capacity(n as usize));
-                        push!(Value::from(a));
+                    Op::NewArray(a, n) => {
+                        let arr = self.heap.new_array(Vec::with_capacity(n as usize));
+                        reg!(a) = Value::from(arr);
                         gc_check!();
                     }
-                    Op::Append => {
-                        let v = pop!();
-                        let mut a = top!().as_gc_unchecked::<Array>();
-                        self.array_push(&mut a, v);
+                    Op::AppendN(a, b, c) => {
+                        let mut arr = reg!(a).as_gc_unchecked::<Array>();
+                        for i in 0..c as usize {
+                            self.array_push(&mut arr, reg!(b as usize + i));
+                        }
                     }
-                    Op::InitField(_) => {
-                        let v = pop!();
-                        let mut t = top!().as_gc_unchecked::<Table>();
-                        let key = *consts.add(op.imm24() as usize);
-                        let before = t.mem_size();
-                        let _ = t.set(key, v);
-                        self.heap.bytes += t.mem_size().saturating_sub(before);
+                    Op::InitField(a, k, c) => init_field!(reg!(a), konst!(k), reg!(c)),
+                    Op::InitFieldW(a, b) => {
+                        let k = payload!();
+                        init_field!(reg!(a), konst!(k), reg!(b));
                     }
-                    Op::InitIndex => {
-                        let v = pop!();
-                        let k = pop!();
-                        let mut t = top!().as_gc_unchecked::<Table>();
+                    Op::InitIndex(a, b, c) => {
+                        let mut t = reg!(a).as_gc_unchecked::<Table>();
                         let before = t.mem_size();
-                        if let Err(e) = t.set(k, v) {
+                        if let Err(e) = t.set(reg!(b), reg!(c)) {
                             throw!(
                                 "{}",
                                 if e == KeyError::Nil { "table key cannot be nil" } else { "table key cannot be NaN" }
@@ -2303,43 +2125,25 @@ impl Vm {
                         }
                         self.heap.bytes += t.mem_size().saturating_sub(before);
                     }
-                    Op::GetField(_) => {
-                        let v = get_field!(top!(), op.imm24() as usize);
-                        *sp.sub(1) = v;
+                    Op::GetField(a, b, k) => {
+                        let v = get_field!(reg!(b), konst!(k));
+                        reg!(a) = v;
                     }
-                    Op::GetLocalField(s, k) => {
-                        let v = get_field!(*base.add(s as usize), k as usize);
-                        push!(v);
+                    Op::GetFieldW(a, b) => {
+                        let k = payload!();
+                        let v = get_field!(reg!(b), konst!(k));
+                        reg!(a) = v;
                     }
-                    Op::SetField(_) | Op::StoreField(_) => {
-                        let store = matches!(op, Op::StoreField(_));
-                        let v = peek!(0);
-                        let obj = peek!(1);
-                        let key = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<Str>();
-                        let mut done = false;
-                        if let Some(mut inst) = obj.as_gc::<Instance>() {
-                            if let Some(i) = inst.ty.field_index(key) {
-                                *inst.fields.get_unchecked_mut(i) = v;
-                                done = true;
-                            }
-                        }
-                        if !done {
-                            protect!(self.set_field_slow(obj, key, v));
-                        }
-                        if store {
-                            sp = sp.sub(2);
-                        } else {
-                            sp = sp.sub(1);
-                            *sp.sub(1) = v;
-                        }
-                        gc_check!();
+                    Op::SetField(a, k, c) => set_field!(reg!(a), konst!(k), reg!(c)),
+                    Op::SetFieldW(a, c) => {
+                        let k = payload!();
+                        set_field!(reg!(a), konst!(k), reg!(c));
                     }
-                    Op::GetIndex => {
-                        let key = peek!(0);
-                        let obj = peek!(1);
-                        let r = if let Some(a) = obj.as_gc::<Array>() {
-                            match array_slot(&a, key) {
-                                Some(i) => *a.items.get_unchecked(i),
+                    Op::GetIndex(a, b, c) => {
+                        let (obj, key) = (reg!(b), reg!(c));
+                        let r = if let Some(arr) = obj.as_gc::<Array>() {
+                            match array_slot(&arr, key) {
+                                Some(i) => *arr.items.get_unchecked(i),
                                 None => protect!(self.get_index_slow(obj, key)),
                             }
                         } else if let Some(t) = obj.as_gc::<Table>() {
@@ -2347,20 +2151,16 @@ impl Vm {
                         } else {
                             protect!(self.get_index_slow(obj, key))
                         };
-                        sp = sp.sub(1);
-                        *sp.sub(1) = r;
+                        reg!(a) = r;
                         gc_check!();
                     }
-                    Op::SetIndex | Op::StoreIndex => {
-                        let store = matches!(op, Op::StoreIndex);
-                        let v = peek!(0);
-                        let key = peek!(1);
-                        let obj = peek!(2);
+                    Op::SetIndex(a, b, c) => {
+                        let (obj, key, v) = (reg!(a), reg!(b), reg!(c));
                         // fast path: in-bounds array write
                         let mut done = false;
-                        if let Some(mut a) = obj.as_gc::<Array>() {
-                            if let Some(i) = array_slot(&a, key) {
-                                *a.items.get_unchecked_mut(i) = v;
+                        if let Some(mut arr) = obj.as_gc::<Array>() {
+                            if let Some(i) = array_slot(&arr, key) {
+                                *arr.items.get_unchecked_mut(i) = v;
                                 done = true;
                             }
                         } else if let Some(mut t) = obj.as_gc::<Table>() {
@@ -2376,86 +2176,84 @@ impl Vm {
                         if !done {
                             protect!(self.set_index_slow(obj, key, v));
                         }
-                        if store {
-                            sp = sp.sub(3);
-                        } else {
-                            sp = sp.sub(2);
-                            *sp.sub(1) = v;
-                        }
                         gc_check!();
                     }
-                    Op::GetMethod(_) => {
-                        let obj = top!();
-                        let name = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<Str>();
+                    Op::GetMethod(a, b, k) => {
+                        let obj = reg!(b);
+                        let name = konst!(k).as_gc_unchecked::<Str>();
                         let f = protect!(self.get_method(obj, name));
-                        *sp.sub(1) = f;
-                        push!(obj);
+                        reg!(a as usize + 1) = obj;
+                        reg!(a) = f;
+                    }
+                    Op::GetMethodW(a, b) => {
+                        let k = payload!();
+                        let obj = reg!(b);
+                        let name = konst!(k).as_gc_unchecked::<Str>();
+                        let f = protect!(self.get_method(obj, name));
+                        reg!(a as usize + 1) = obj;
+                        reg!(a) = f;
                     }
 
                     // ---- structs
-                    Op::Struct(_) => {
-                        let tmpl = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<StructType>();
+                    Op::Struct(a, k) => {
+                        let tmpl = konst!(k).as_gc_unchecked::<StructType>();
                         let ty = self.instantiate_type(tmpl);
-                        push!(Value::from(ty));
+                        reg!(a) = Value::from(ty);
                         gc_check!();
                     }
-                    Op::DefMethod(_) => {
-                        let target = peek!(1);
+                    Op::DefMethod(a, b) => {
+                        let k = payload!();
+                        let target = reg!(a);
                         match target.as_gc::<StructType>() {
                             Some(mut ty) => {
-                                let f = pop!();
-                                let name = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<Str>();
-                                ty.set_method(name, f);
+                                let name = konst!(k).as_gc_unchecked::<Str>();
+                                ty.set_method(name, reg!(b));
                             }
                             None => throw!("`impl` target must be a struct, got {}", self.type_of(target)),
                         }
                     }
 
                     // ---- pattern matching
-                    Op::IsVariant(arity, _) => {
-                        let name = (*consts.add(op_name_k(op))).as_gc_unchecked::<Str>();
-                        let v = top!();
-                        let r = protect!(self.variant_matches(v, name, arity, None));
-                        *sp.sub(1) = Value::bool(r);
+                    Op::IsVariant(a, b, c) => {
+                        let e = payload!();
+                        let name = konst!(e & 0xFFFF).as_gc_unchecked::<Str>();
+                        let arity = (e >> 16) as u8;
+                        let ty = if c == 255 { None } else { Some(reg!(c)) };
+                        let r = protect!(self.variant_matches(reg!(b), name, arity, ty));
+                        reg!(a) = Value::bool(r);
                     }
-                    Op::IsVariantQ(arity, _) => {
-                        let name = (*consts.add(op_name_k(op))).as_gc_unchecked::<Str>();
-                        let (ty, v) = (peek!(0), peek!(1));
-                        let r = protect!(self.variant_matches(v, name, arity, Some(ty)));
-                        sp = sp.sub(1);
-                        *sp.sub(1) = Value::bool(r);
-                    }
-                    Op::Unpack(i) => {
-                        let v = top!();
+                    Op::Unpack(a, b, i) => {
+                        let v = reg!(b);
                         match v.as_gc::<Instance>() {
-                            Some(inst) if (i as usize) < inst.fields.len() => *sp.sub(1) = inst.fields[i as usize],
+                            Some(inst) if (i as usize) < inst.fields.len() => reg!(a) = inst.fields[i as usize],
                             _ => throw!("cannot unpack field {} of {}", i, self.type_of(v)),
                         }
                     }
-                    Op::MatchFail(s) => {
-                        let v = *base.add(s as usize);
+                    Op::MatchFail(a) => {
+                        let v = reg!(a);
                         let shown = protect!(self.repr(v));
                         throw!("no match arm matched the value {}", shown);
                     }
 
-                    Op::Try => {
-                        let v = top!();
+                    Op::Try(a) => {
+                        let v = reg!(a);
                         match self.split_try(v) {
-                            Some(Some(payload)) => *sp.sub(1) = payload,
+                            Some(Some(payload)) => reg!(a) = payload,
                             Some(None) => do_return!(v),
                             None => throw!("`?` expects an Option or a Result, got {}", self.type_of(v)),
                         }
                     }
 
                     // ---- modules
-                    Op::Import(_) => {
-                        let spec = *consts.add(op.imm24() as usize);
+                    Op::Import(a, k) => {
+                        let spec = konst!(k);
                         let m = protect!(self.import_module(spec));
-                        push!(m);
+                        reg!(a) = m;
                     }
-                    Op::GetExport(_) => {
-                        let module = top!();
-                        let key = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<Str>();
+                    Op::GetExport(a, b) => {
+                        let k = payload!();
+                        let module = reg!(b);
+                        let key = konst!(k).as_gc_unchecked::<Str>();
                         let v = match module.as_gc::<Table>() {
                             Some(t) => t.get_str(key),
                             None => Value::NIL,
@@ -2463,40 +2261,40 @@ impl Vm {
                         if v.is_nil() {
                             throw!("module has no export '{}'", key.as_str());
                         }
-                        *sp.sub(1) = v;
+                        reg!(a) = v;
                     }
 
                     // ---- loops
-                    Op::ForPrep(s) => {
+                    Op::ForPrep(a) => {
                         let o = ext!();
-                        let cur = *base.add(s as usize);
-                        let end = *base.add(s as usize + 1);
+                        let cur = reg!(a);
+                        let end = reg!(a as usize + 1);
                         if !cur.is_num() || !end.is_num() {
                             throw!("range bounds must be numbers, got {} and {}", self.type_of(cur), self.type_of(end));
                         }
                         if cur.as_num() < end.as_num() {
-                            *base.add(s as usize + 2) = cur;
+                            reg!(a as usize + 2) = cur;
                         } else {
                             jump!(o);
                         }
                     }
-                    Op::ForLoop(s) => {
+                    Op::ForLoop(a) => {
                         let o = ext!();
-                        let next = (*base.add(s as usize)).as_num() + 1.0;
-                        if next < (*base.add(s as usize + 1)).as_num() {
+                        let next = reg!(a).as_num() + 1.0;
+                        if next < reg!(a as usize + 1).as_num() {
                             let v = Value::num(next);
-                            *base.add(s as usize) = v;
-                            *base.add(s as usize + 2) = v;
+                            reg!(a) = v;
+                            reg!(a as usize + 2) = v;
                             jump!(o);
                         }
                     }
-                    Op::IterNext1(s) | Op::IterNext2(s) => {
+                    Op::IterNext1(a) | Op::IterNext2(a) => {
                         let o = ext!();
                         let two = matches!(op, Op::IterNext2(..));
-                        let coll = *base.add(s as usize);
-                        let pos = (*base.add(s as usize + 1)).as_num() as usize;
-                        let next = if let Some(a) = coll.as_gc::<Array>() {
-                            a.items.get(pos).map(|&v| (pos + 1, Value::num(pos as f64), v))
+                        let coll = reg!(a);
+                        let pos = reg!(a as usize + 1).as_num() as usize;
+                        let next = if let Some(arr) = coll.as_gc::<Array>() {
+                            arr.items.get(pos).map(|&v| (pos + 1, Value::num(pos as f64), v))
                         } else if let Some(t) = coll.as_gc::<Table>() {
                             t.next(pos)
                         } else {
@@ -2504,12 +2302,12 @@ impl Vm {
                         };
                         match next {
                             Some((np, key, val)) => {
-                                *base.add(s as usize + 1) = Value::num(np as f64);
+                                reg!(a as usize + 1) = Value::num(np as f64);
                                 if two {
-                                    *base.add(s as usize + 2) = key;
-                                    *base.add(s as usize + 3) = val;
+                                    reg!(a as usize + 2) = key;
+                                    reg!(a as usize + 3) = val;
                                 } else {
-                                    *base.add(s as usize + 2) = val;
+                                    reg!(a as usize + 2) = val;
                                 }
                             }
                             None => jump!(o),
@@ -2524,6 +2322,19 @@ impl Vm {
 }
 
 // ---- free helpers -----------------------------------------------------------------------
+
+/// How many registers (counted from the frame base) can hold live values while a frame is
+/// stopped right after `op`; `None` = all of them.
+///
+/// Only a call tells: its arguments are the topmost temporaries (they are handed out in stack
+/// order), so everything above them is dead.  Any other instruction may be writing a local
+/// while temporaries above it are still waiting for their operation.
+fn live_regs(op: Op) -> Option<usize> {
+    match op {
+        Op::Call(a, n) | Op::TailCall(a, n) => Some(a as usize + n as usize + 1),
+        _ => None,
+    }
+}
 
 /// In-bounds position of `key` in `arr`, or `None` (the caller then reports the precise error).
 #[inline(always)]
@@ -2611,14 +2422,5 @@ pub fn nth_char(s: &str, n: usize) -> Option<char> {
         s.as_bytes().get(n).map(|&b| b as char)
     } else {
         s.chars().nth(n)
-    }
-}
-
-/// Name-constant operand of `IsVariant` / `IsVariantQ`.
-#[inline(always)]
-fn op_name_k(op: Op) -> usize {
-    match op {
-        Op::IsVariant(_, k) | Op::IsVariantQ(_, k) => k as usize,
-        _ => 0,
     }
 }
