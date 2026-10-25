@@ -61,6 +61,11 @@ fn compiled_code_is_structurally_valid() {
                 return s;
             }
             print(f(100));
+            union U { A(x), B(x, y), C }
+            fn m(v) {
+                return match v { A(1 | 2) => 1, A(x) if x > 5 => x, B(_, 0) | C => 0, B(x, y) => x + y, 3 => 7, _ => -1 };
+            }
+            print(m(U.A(1)), m(U.C), m(3));
         "#;
         for optimize in [true, false] {
             let mut vm = Vm::new();
@@ -92,7 +97,7 @@ fn fused_ops_use_double_instructions_only_when_optimizing() {
         all_protos(proto, &mut protos);
         protos
             .iter()
-            .flat_map(|p| p.code.iter().copied().collect::<Vec<_>>())
+            .flat_map(|p| p.code.to_vec())
             .filter(|o| matches!(o, Op::JNotLtLL(..) | Op::JNotLtLK(..)))
             .count()
     };
@@ -143,7 +148,9 @@ fn slots_above_255_and_constants_above_65535() {
         for i in 0..70_000 {
             src.push_str(&format!("s += {}.5;\n", i));
         }
-        src.push_str("var x = 70000; if x < 70001.25 { s += 1; } while x < 70002.25 { x += 1; } s + x }\nprint(g());\n");
+        src.push_str(
+            "var x = 70000; if x < 70001.25 { s += 1; } while x < 70002.25 { x += 1; } s + x }\nprint(g());\n",
+        );
         let expect: f64 = (0..70_000).map(|i| i as f64 + 0.5).sum::<f64>() + 1.0 + 70003.0;
         for optimize in [true, false] {
             let (out, r) = run(&src, optimize);

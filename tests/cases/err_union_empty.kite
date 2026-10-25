@@ -1,0 +1,2 @@
+// error: at least one variant
+union U { };

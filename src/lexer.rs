@@ -34,6 +34,8 @@ fn keyword(s: &[u8]) -> TokenKind {
         b"do" => Do,
         b"import" => Import,
         b"export" => Export,
+        b"union" => Union,
+        b"match" => Match,
         b"nil" => Nil,
         b"true" => True,
         b"false" => False,

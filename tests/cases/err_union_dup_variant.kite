@@ -1,0 +1,2 @@
+// error: duplicate variant
+union U { A, A };

@@ -147,6 +147,7 @@ fn starts_expr(k: TokenKind) -> bool {
             | T::Loop
             | T::For
             | T::Do
+            | T::Match
             | T::Minus
             | T::Bang
             | T::Tilde
@@ -425,14 +426,17 @@ impl<'a> Parser<'a> {
                 Ok(StmtResult::Stmt(self.ast.push(Node::Const { name, init: f }, start)))
             }
             T::Import => self.parse_import(start),
+            T::Union => self.parse_union(start),
             T::Export => {
                 self.pos += 1;
-                let ok = matches!(self.kind(), T::Var | T::Const | T::Struct)
+                let ok = matches!(self.kind(), T::Var | T::Const | T::Struct | T::Union)
                     || (self.kind() == T::Fn && self.kind_at(1) == T::Ident);
                 if !ok {
                     let found = self.describe_current();
-                    return self
-                        .err(format!("expected `var`, `const`, `fn` or `struct` after `export`, found {}", found));
+                    return self.err(format!(
+                        "expected `var`, `const`, `fn`, `struct` or `union` after `export`, found {}",
+                        found
+                    ));
                 }
                 let inner = match self.parse_stmt(top)? {
                     StmtResult::Stmt(n) | StmtResult::Tail(n) => n,
@@ -970,6 +974,7 @@ impl<'a> Parser<'a> {
                 Ok(self.ast.push(Node::Unary { op, expr }, pos))
             }
             T::If => self.parse_if(),
+            T::Match => self.parse_match(),
             T::While => {
                 self.pos += 1;
                 let cond = self.parse_expr()?;
@@ -1000,13 +1005,261 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 Ok(self.ast.push(Node::Continue, pos))
             }
-            T::Var | T::Const | T::Struct | T::Impl => {
+            T::Var | T::Const | T::Struct | T::Impl | T::Union | T::Import | T::Export => {
                 let found = self.describe_current();
                 self.err(format!("{} is a declaration and cannot be used as an expression", found))
             }
             _ => {
                 let found = self.describe_current();
                 self.err(format!("expected expression, found {}", found))
+            }
+        }
+    }
+
+    // ---- unions and match ------------------------------------------------------
+
+    /// `union Name { Circle(radius), Rect(w, h), Point }`
+    fn parse_union(&mut self, start: u32) -> PResult<StmtResult> {
+        self.pos += 1; // `union`
+        let name = self.expect_ident("after `union`")?;
+        self.expect(T::LBrace, "after the union name")?;
+        let mark = self.scratch.len();
+        let mut seen: Vec<Sym> = Vec::new();
+        while self.kind() != T::RBrace {
+            if self.kind() == T::Eof {
+                self.scratch.truncate(mark);
+                return self.err("unclosed union declaration");
+            }
+            let vtok = self.tok();
+            let vname = match self.expect_ident("as a union variant") {
+                Ok(n) => n,
+                Err(()) => {
+                    self.scratch.truncate(mark);
+                    return Err(());
+                }
+            };
+            if seen.contains(&vname) {
+                self.error_at(vtok, format!("duplicate variant `{}`", self.text(vtok)));
+                self.scratch.truncate(mark);
+                return Err(());
+            }
+            seen.push(vname);
+            let fields = if self.eat(T::LParen) {
+                let fmark = self.scratch.len();
+                while self.kind() != T::RParen {
+                    match self.expect_ident("as a variant field name") {
+                        Ok(f) => self.scratch.push(f.0),
+                        Err(()) => {
+                            self.scratch.truncate(mark);
+                            return Err(());
+                        }
+                    }
+                    if !self.eat(T::Comma) {
+                        break;
+                    }
+                }
+                let f = self.finish_list(fmark);
+                if let Err(()) = self.expect(T::RParen, "to close the variant fields") {
+                    self.scratch.truncate(mark);
+                    return Err(());
+                }
+                f
+            } else {
+                ListRef::EMPTY
+            };
+            self.ast.variants.push(VariantDef { name: vname, fields });
+            self.scratch.push(self.ast.variants.len() as u32 - 1);
+            if !self.eat(T::Comma) {
+                break;
+            }
+        }
+        let variants = self.finish_list(mark);
+        self.expect(T::RBrace, "to close the union")?;
+        if variants.len == 0 {
+            return self.err("a union needs at least one variant");
+        }
+        Ok(StmtResult::Stmt(self.ast.push(Node::Union { name, variants }, start)))
+    }
+
+    /// `match scrutinee { pattern [if guard] => body, ... }`
+    fn parse_match(&mut self) -> PResult<NodeId> {
+        let pos = self.pos_here();
+        self.pos += 1; // `match`
+        let scrutinee = self.parse_expr()?;
+        self.expect(T::LBrace, "to start the match arms")?;
+        let mut arms: Vec<Arm> = Vec::new();
+        while self.kind() != T::RBrace {
+            if self.kind() == T::Eof {
+                return self.err("unclosed match, expected `}`");
+            }
+            let pat = self.parse_pattern()?;
+            let guard = if self.eat(T::If) { self.parse_expr()? } else { NodeId::NONE };
+            self.expect(T::Arrow, "after the match pattern")?;
+            let body = if self.kind() == T::LBrace && !self.brace_is_table(Brace::Lambda) {
+                self.parse_block()?
+            } else {
+                self.parse_expr_assign()?
+            };
+            arms.push(Arm { pat, guard, body });
+            if !self.eat(T::Comma) && self.kind() != T::RBrace && !self.prev_is_rbrace() {
+                let found = self.describe_current();
+                return self.err(format!("expected `,` or `}}` after a match arm, found {}", found));
+            }
+        }
+        self.expect(T::RBrace, "to close the match")?;
+        if arms.is_empty() {
+            self.error_at(self.toks[self.pos - 1], "a match needs at least one arm".to_string());
+            return Err(());
+        }
+        let arms_start = self.ast.arms.len() as u32;
+        let arms_len = arms.len() as u32;
+        self.ast.arms.extend(arms);
+        self.ast.matches.push(MatchDef { scrutinee, arms_start, arms_len });
+        let id = MatchId(self.ast.matches.len() as u32 - 1);
+        Ok(self.ast.push(Node::Match(id), pos))
+    }
+
+    /// `alt | alt | ...`
+    fn parse_pattern(&mut self) -> PResult<PatId> {
+        self.enter()?;
+        let pos = self.pos_here();
+        let first = self.parse_pattern_atom()?;
+        let r = if self.kind() != T::Pipe {
+            first
+        } else {
+            let mark = self.scratch.len();
+            self.scratch.push(first.0);
+            while self.eat(T::Pipe) {
+                match self.parse_pattern_atom() {
+                    Ok(a) => self.scratch.push(a.0),
+                    Err(()) => {
+                        self.scratch.truncate(mark);
+                        return Err(());
+                    }
+                }
+            }
+            let alts = self.finish_list(mark);
+            self.ast.add_pat(Pat::Or(alts), pos)
+        };
+        self.leave();
+        Ok(r)
+    }
+
+    fn parse_pattern_atom(&mut self) -> PResult<PatId> {
+        let t = self.tok();
+        let pos = t.start;
+        match t.kind() {
+            T::Number | T::Minus => {
+                let neg = t.kind() == T::Minus;
+                if neg {
+                    self.pos += 1;
+                }
+                let nt = self.tok();
+                if nt.kind() != T::Number {
+                    let found = self.describe_current();
+                    return self.err(format!("expected a number after `-` in a pattern, found {}", found));
+                }
+                self.pos += 1;
+                match parse_number(self.text(nt)) {
+                    Some(v) => Ok(self.ast.add_pat(Pat::Num(if neg { -v } else { v }), pos)),
+                    None => {
+                        self.error_at(nt, format!("invalid number literal `{}`", self.text(nt)));
+                        Err(())
+                    }
+                }
+            }
+            T::String => {
+                self.pos += 1;
+                let raw = &self.src[t.start as usize + 1..t.end() - 1];
+                if let Err(m) = unescape(raw) {
+                    self.error_at(t, m);
+                    return Err(());
+                }
+                Ok(self.ast.add_pat(Pat::Str { start: t.start + 1, len: t.len() as u32 - 2 }, pos))
+            }
+            T::True | T::False => {
+                self.pos += 1;
+                Ok(self.ast.add_pat(Pat::Bool(t.kind() == T::True), pos))
+            }
+            T::Nil => {
+                self.pos += 1;
+                Ok(self.ast.add_pat(Pat::Nil, pos))
+            }
+            T::LParen => {
+                self.pos += 1;
+                let p = self.parse_pattern()?;
+                self.expect(T::RParen, "to close the grouped pattern")?;
+                Ok(p)
+            }
+            T::Ident => {
+                let text = self.text(t);
+                if text == "_" && !matches!(self.kind_at(1), T::Dot | T::LParen) {
+                    self.pos += 1;
+                    return Ok(self.ast.add_pat(Pat::Wild, pos));
+                }
+                // Ident ('.' Ident)* ['(' patterns ')']
+                let mut segs: Vec<(Sym, Token)> = Vec::new();
+                loop {
+                    let st = self.advance();
+                    segs.push((self.interner.intern(self.text(st)), st));
+                    if self.kind() == T::Dot && self.kind_at(1) == T::Ident {
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let parens = self.kind() == T::LParen;
+                let (name, name_tok) = *segs.last().unwrap();
+                let qualified = segs.len() > 1;
+                let capitalised = self.text(name_tok).chars().next().is_some_and(|c| c.is_ascii_uppercase());
+                if !qualified && !parens && !capitalised {
+                    return Ok(self.ast.add_pat(Pat::Bind(name), pos));
+                }
+                if !qualified && !capitalised {
+                    self.error_at(
+                        name_tok,
+                        format!(
+                            "`{}(…)` is not a variant pattern: variant names start with an upper-case letter",
+                            self.text(name_tok)
+                        ),
+                    );
+                    return Err(());
+                }
+                // qualifier expression: every segment but the last
+                let mut qual = NodeId::NONE;
+                for &(s, st) in &segs[..segs.len() - 1] {
+                    qual = if qual.is_none() {
+                        self.ast.push(Node::Ident(s), st.start)
+                    } else {
+                        self.ast.push(Node::Field { obj: qual, name: s }, st.start)
+                    };
+                }
+                let args = if parens {
+                    self.pos += 1; // `(`
+                    let mark = self.scratch.len();
+                    while self.kind() != T::RParen {
+                        match self.parse_pattern() {
+                            Ok(p) => self.scratch.push(p.0),
+                            Err(()) => {
+                                self.scratch.truncate(mark);
+                                return Err(());
+                            }
+                        }
+                        if !self.eat(T::Comma) {
+                            break;
+                        }
+                    }
+                    let a = self.finish_list(mark);
+                    self.expect(T::RParen, "to close the variant pattern")?;
+                    a
+                } else {
+                    ListRef::EMPTY
+                };
+                Ok(self.ast.add_pat(Pat::Variant { qual, name, args, parens }, pos))
+            }
+            _ => {
+                let found = self.describe_current();
+                self.err(format!("expected a pattern, found {}", found))
             }
         }
     }

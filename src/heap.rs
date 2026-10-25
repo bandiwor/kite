@@ -162,9 +162,20 @@ impl Heap {
                 let u = &*(p as *mut Upvalue);
                 self.mark_value(*u.location);
             }
+            Kind::Variant => {
+                let v = &*(p as *mut VariantCtor);
+                self.mark_gc(v.ty);
+            }
             Kind::StructType => {
                 let s = &*(p as *mut StructType);
                 self.mark_gc(s.name);
+                for v in &s.variants {
+                    self.mark_gc(v.name);
+                    for &f in &v.fields {
+                        self.mark_gc(f);
+                    }
+                    self.mark_value(v.value);
+                }
                 for &f in &s.fields {
                     self.mark_gc(f);
                 }
@@ -254,6 +265,7 @@ unsafe fn obj_size(p: *mut Header) -> usize {
         Kind::Native => (*(p as *mut Native)).heap_size(),
         Kind::StructType => (*(p as *mut StructType)).heap_size(),
         Kind::Instance => (*(p as *mut Instance)).heap_size(),
+        Kind::Variant => (*(p as *mut VariantCtor)).heap_size(),
     }
 }
 
@@ -267,6 +279,7 @@ unsafe fn free_obj(p: *mut Header) {
         Kind::Native => drop(Box::from_raw(p as *mut Native)),
         Kind::StructType => drop(Box::from_raw(p as *mut StructType)),
         Kind::Instance => drop(Box::from_raw(p as *mut Instance)),
+        Kind::Variant => drop(Box::from_raw(p as *mut VariantCtor)),
     }
 }
 

@@ -1,0 +1,2 @@
+// error: after the match pattern
+match 1 { 1 2 };

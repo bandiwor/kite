@@ -1,0 +1,3 @@
+// error: qualifier of a pattern must be a struct or union
+var n = 5;
+match 2 { n.X(_) => 1 };

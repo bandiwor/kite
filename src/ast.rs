@@ -38,6 +38,12 @@ pub struct ForId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ImportId(pub u32);
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PatId(pub u32);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MatchId(pub u32);
+
 /// A slice of the shared side list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ListRef {
@@ -175,6 +181,13 @@ pub enum Node {
         target: NodeId,
         methods: ListRef,
     },
+    /// `union Name { Variant(field, ...), Unit, ... }`; `variants` are indices into `Ast::variants`.
+    Union {
+        name: Sym,
+        variants: ListRef,
+    },
+    /// `match scrutinee { pattern [if guard] => body, ... }`
+    Match(MatchId),
     /// `import "path" [as name]` / `import { a, b } from "path"`.
     Import(ImportId),
     /// `export <var | const | fn | struct declaration>`.
@@ -188,6 +201,54 @@ pub struct FuncDef {
     /// Raw `Sym` values.
     pub params: ListRef,
     pub body: NodeId,
+}
+
+/// One variant of a `union` declaration.
+pub struct VariantDef {
+    pub name: Sym,
+    /// Payload field names (raw `Sym` values); their count is the variant's arity.
+    pub fields: ListRef,
+}
+
+/// Patterns live in their own arena: they are not expressions.
+#[derive(Clone, Copy, Debug)]
+pub enum Pat {
+    /// `_`
+    Wild,
+    /// A lower-case identifier: binds the matched value.
+    Bind(Sym),
+    Num(f64),
+    /// Raw literal text between the quotes.
+    Str {
+        start: u32,
+        len: u32,
+    },
+    Bool(bool),
+    Nil,
+    /// `Name`, `Name(p1, p2)`, `Type.Name(..)`.  Matches a union variant (or struct) by name;
+    /// `qual` (when set) is an expression that must evaluate to the very type.
+    /// Without parentheses any number of fields is accepted.
+    Variant {
+        qual: NodeId,
+        name: Sym,
+        args: ListRef,
+        parens: bool,
+    },
+    /// `p1 | p2 | ...` (alternatives are pattern ids)
+    Or(ListRef),
+}
+
+pub struct Arm {
+    pub pat: PatId,
+    /// `NodeId::NONE` without a guard.
+    pub guard: NodeId,
+    pub body: NodeId,
+}
+
+pub struct MatchDef {
+    pub scrutinee: NodeId,
+    pub arms_start: u32,
+    pub arms_len: u32,
 }
 
 pub struct ImportDef {
@@ -217,6 +278,11 @@ pub struct Ast {
     pub funcs: Vec<FuncDef>,
     pub fors: Vec<ForDef>,
     pub imports: Vec<ImportDef>,
+    pub variants: Vec<VariantDef>,
+    pub pats: Vec<Pat>,
+    pub pat_spans: Vec<u32>,
+    pub arms: Vec<Arm>,
+    pub matches: Vec<MatchDef>,
     pub root: Option<NodeId>,
 }
 
@@ -272,6 +338,29 @@ impl Ast {
         ForId(self.fors.len() as u32 - 1)
     }
 
+    pub fn add_pat(&mut self, p: Pat, pos: u32) -> PatId {
+        self.pats.push(p);
+        self.pat_spans.push(pos);
+        PatId(self.pats.len() as u32 - 1)
+    }
+
+    pub fn pat(&self, id: PatId) -> Pat {
+        self.pats[id.0 as usize]
+    }
+
+    pub fn pats_of(&self, r: ListRef) -> impl Iterator<Item = PatId> + '_ {
+        self.list(r).iter().map(|&i| PatId(i))
+    }
+
+    pub fn match_def(&self, id: MatchId) -> &MatchDef {
+        &self.matches[id.0 as usize]
+    }
+
+    pub fn arms_of(&self, id: MatchId) -> std::ops::Range<usize> {
+        let m = self.match_def(id);
+        m.arms_start as usize..(m.arms_start + m.arms_len) as usize
+    }
+
     pub fn add_import(&mut self, i: ImportDef) -> ImportId {
         self.imports.push(i);
         ImportId(self.imports.len() as u32 - 1)
@@ -296,6 +385,27 @@ impl Ast {
             self.dump_node(root, interner, src, 0, &mut out);
         }
         out
+    }
+
+    fn dump_pat(&self, id: PatId, i: &Interner, src: &str) -> String {
+        match self.pat(id) {
+            Pat::Wild => "_".into(),
+            Pat::Bind(s) => i.get(s).to_string(),
+            Pat::Num(n) => format!("{}", n),
+            Pat::Str { start, len } => format!("{:?}", &src[start as usize..(start + len) as usize]),
+            Pat::Bool(b) => b.to_string(),
+            Pat::Nil => "nil".into(),
+            Pat::Variant { qual, name, args, parens } => {
+                let q = if qual.is_some() { "T." } else { "" };
+                let a: Vec<String> = self.pats_of(args).map(|p| self.dump_pat(p, i, src)).collect();
+                if parens {
+                    format!("{}{}({})", q, i.get(name), a.join(", "))
+                } else {
+                    format!("{}{}", q, i.get(name))
+                }
+            }
+            Pat::Or(alts) => self.pats_of(alts).map(|p| self.dump_pat(p, i, src)).collect::<Vec<_>>().join(" | "),
+        }
     }
 
     fn dump_node(&self, id: NodeId, i: &Interner, src: &str, ind: usize, out: &mut String) {
@@ -453,6 +563,33 @@ impl Ast {
             Node::Struct { name, fields } => {
                 let fs: Vec<&str> = self.syms_of(fields).map(|s| i.get(s)).collect();
                 line!("(struct {} [{}])", i.get(name), fs.join(" "));
+            }
+            Node::Union { name, variants } => {
+                let vs: Vec<String> = self
+                    .list(variants)
+                    .iter()
+                    .map(|&v| {
+                        let d = &self.variants[v as usize];
+                        let fs: Vec<&str> = self.syms_of(d.fields).map(|s| i.get(s)).collect();
+                        format!("{}({})", i.get(d.name), fs.join(" "))
+                    })
+                    .collect();
+                line!("(union {} [{}])", i.get(name), vs.join(" "));
+            }
+            Node::Match(mid) => {
+                line!("(match");
+                self.dump_node(self.match_def(mid).scrutinee, i, src, ind + 1, out);
+                for k in self.arms_of(mid) {
+                    let arm = &self.arms[k];
+                    line!("  (arm {}", self.dump_pat(arm.pat, i, src));
+                    if arm.guard.is_some() {
+                        line!("    guard:");
+                        self.dump_node(arm.guard, i, src, ind + 3, out);
+                    }
+                    self.dump_node(arm.body, i, src, ind + 2, out);
+                    line!("  )");
+                }
+                line!(")");
             }
             Node::Import(id) => {
                 let d = self.import_def(id);

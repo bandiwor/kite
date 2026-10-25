@@ -1,0 +1,61 @@
+// A tiny symbolic algebra on tagged unions: build, simplify, evaluate, print.
+union Expr {
+    Num(n),
+    Var(name),
+    Add(l, r),
+    Mul(l, r),
+    Neg(e),
+}
+
+fn simplify(e) {
+    match e {
+        Add(Num(a), Num(b)) => Expr.Num(a + b),
+        Mul(Num(a), Num(b)) => Expr.Num(a * b),
+        Add(Num(0), x) | Add(x, Num(0)) => simplify(x),
+        Mul(Num(1), x) | Mul(x, Num(1)) => simplify(x),
+        Mul(Num(0), _) | Mul(_, Num(0)) => Expr.Num(0),
+        Neg(Neg(x)) => simplify(x),
+        Neg(Num(n)) => Expr.Num(-n),
+        Add(l, r) => {
+            const sl = simplify(l);
+            const sr = simplify(r);
+            if sl == l && sr == r { e } else { simplify(Expr.Add(sl, sr)) }
+        },
+        Mul(l, r) => {
+            const sl = simplify(l);
+            const sr = simplify(r);
+            if sl == l && sr == r { e } else { simplify(Expr.Mul(sl, sr)) }
+        },
+        _ => e,
+    }
+}
+
+fn eval(e, env) {
+    match e {
+        Num(n) => n,
+        Var(name) => env[name],
+        Add(l, r) => eval(l, env) + eval(r, env),
+        Mul(l, r) => eval(l, env) * eval(r, env),
+        Neg(x) => -eval(x, env),
+    }
+}
+
+fn show(e) {
+    match e {
+        Num(n) => "" + n,
+        Var(name) => name,
+        Add(l, r) => "(" + show(l) + " + " + show(r) + ")",
+        Mul(l, r) => show(l) + " * " + show(r),
+        Neg(x) => "-" + show(x),
+    }
+}
+
+const x = Expr.Var("x");
+const e = Expr.Add(
+    Expr.Mul(Expr.Num(1), Expr.Add(x, Expr.Num(0))),
+    Expr.Mul(Expr.Num(2), Expr.Add(Expr.Num(3), Expr.Num(4))),
+);
+print(show(e));
+const s = simplify(e);
+print(show(s));
+print(eval(e, { x: 5 }), eval(s, { x: 5 }));

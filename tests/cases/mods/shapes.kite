@@ -1,0 +1,6 @@
+export union Shape { Circle(r), Rect(w, h), Empty }
+export fn area(s) {
+    match s { Circle(r) => 3 * r * r, Rect(w, h) => w * h, Empty => 0 }
+}
+union Hidden { A }
+export const hidden = Hidden.A;

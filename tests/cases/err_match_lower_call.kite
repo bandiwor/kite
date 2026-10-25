@@ -1,0 +1,2 @@
+// error: not a variant pattern
+match 1 { foo(x) => x };

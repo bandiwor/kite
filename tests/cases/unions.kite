@@ -1,0 +1,68 @@
+// tagged unions (like Rust's enum)
+union Shape {
+    Circle(radius),
+    Rect(w, h),
+    Point,
+}
+
+const c = Shape.Circle(2);
+const r = Shape.Rect(3, 4);
+const p = Shape.Point;
+print(c, r, p);   // expect: Circle(2) Rect(3, 4) Point
+print(type(c), type(Shape), type(Shape.Circle), type(p));   // expect: Shape union function Shape
+print(Shape, Shape.Circle);   // expect: <union Shape> <variant Shape.Circle>
+
+// payload fields can be read and written by the names given in the declaration
+print(c.radius, r.w, r.h);   // expect: 2 3 4
+c.radius = 5;
+r.h += 1;
+print(c, r);   // expect: Circle(5) Rect(3, 5)
+
+// unit variants are shared values, tuple variants build new ones; equality is identity unless `eq`
+print(Shape.Point == Shape.Point, Shape.Circle(1) == Shape.Circle(1));   // expect: true false
+const ctor = Shape.Rect;
+print(ctor(1, 2));   // expect: Rect(1, 2)
+print(map([1, 2, 3], Shape.Circle));   // expect: [Circle(1), Circle(2), Circle(3)]
+
+// methods, operator hooks and destroy work like for structs
+impl Shape {
+    fn area(self) {
+        match self {
+            Circle(r) => 3 * r * r,
+            Rect(w, h) => w * h,
+            Point => 0,
+        }
+    }
+    fn eq(a, b) { a:area() == b:area() }
+    fn lt(a, b) { a:area() < b:area() }
+    fn add(a, b) { Shape.Rect(a:area(), b:area()) }
+    fn len(a) { a:area() }
+}
+print(c:area(), r:area(), p:area());   // expect: 75 15 0
+print(Shape.Circle(2) == Shape.Rect(3, 4), Shape.Circle(1) == Shape.Circle(1));   // expect: true true
+print(Shape.Point < Shape.Circle(1), Shape.Circle(1) + Shape.Rect(2, 2));   // expect: true Rect(3, 4)
+print(len(Shape.Rect(2, 5)), Shape.area(Shape.Circle(3)));   // expect: 10 27
+
+// two independent unions may use the same variant names
+union Opt { None, Some(value) }
+union Res { None, Ok(value), Err(msg) }
+print(Opt.None == Res.None, type(Opt.None), type(Res.None));   // expect: false Opt Res
+
+// a union declared in a function is a fresh type per call
+fn make() { union Local { A(x), B } return Local; }
+const L1 = make();
+const L2 = make();
+print(L1 == L2, L1.A(1), type(L2.B));   // expect: false A(1) Local
+
+// variants in containers and as table values
+const bag = { circle: Shape.Circle(1), list: [Shape.Point, Shape.Rect(1, 1)] };
+print(bag.list[1], bag);   // expect: Rect(1, 1) {circle: Circle(1), list: [Point, Rect(1, 1)]}
+
+// `str` hook controls printing
+union Color { Red, Green, Rgb(r, g, b) }
+impl Color {
+    fn str(c) {
+        match c { Red => "red", Green => "green", Rgb(r, g, b) => "rgb(" + r + "," + g + "," + b + ")" }
+    }
+}
+print(Color.Red, Color.Rgb(1, 2, 3), [Color.Green]);   // expect: red rgb(1,2,3) [green]

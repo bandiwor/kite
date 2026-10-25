@@ -1,0 +1,13 @@
+import { Shape, area } from "mods/shapes";
+import "mods/shapes" as sh;
+
+print(area(Shape.Circle(2)), area(Shape.Rect(2, 5)), area(Shape.Empty));   // expect: 12 10 0
+print(Shape == sh.Shape, type(Shape));   // expect: true union
+
+// patterns work across module boundaries, qualified and unqualified
+print(match sh.Shape.Rect(1, 2) { sh.Shape.Rect(w, h) => w + h, _ => 0 });   // expect: 3
+print(match Shape.Empty { Empty => "empty", _ => "?" });   // expect: empty
+
+// a value of a private union is still a regular value
+print(sh.hidden, type(sh.hidden));   // expect: A Hidden
+print(match sh.hidden { A => "a" });   // expect: a

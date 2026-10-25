@@ -23,6 +23,8 @@ pub enum Kind {
     Native,
     StructType,
     Instance,
+    /// Callable that builds instances of one union variant.
+    Variant,
 }
 
 #[repr(C)]
@@ -261,11 +263,23 @@ impl Hook {
     }
 }
 
+/// One variant of a `union` type.
+pub struct Variant {
+    pub name: Gc<Str>,
+    /// Payload field names; their count is the arity.
+    pub fields: Vec<Gc<Str>>,
+    /// What `Type.Variant` evaluates to: the shared instance for a unit variant,
+    /// a `VariantCtor` otherwise (`NIL` in the compile-time template).
+    pub value: Value,
+}
+
+/// `struct` and `union` types share this object: a union has `variants` and no `fields`.
 #[repr(C)]
 pub struct StructType {
     pub hdr: Header,
     pub name: Gc<Str>,
     pub fields: Vec<Gc<Str>>,
+    pub variants: Vec<Variant>,
     /// Functions defined in `impl` blocks, in definition order.
     pub methods: Vec<(Gc<Str>, Value)>,
     /// Quick access to the special methods (`Value::NIL` when absent).
@@ -273,6 +287,14 @@ pub struct StructType {
 }
 
 impl StructType {
+    pub fn is_union(&self) -> bool {
+        !self.variants.is_empty()
+    }
+
+    pub fn variant_index(&self, name: Gc<Str>) -> Option<usize> {
+        self.variants.iter().position(|v| str_eq(v.name, name))
+    }
+
     pub fn field_index(&self, name: Gc<Str>) -> Option<usize> {
         if let Some(i) = self.fields.iter().position(|&f| f == name) {
             return Some(i);
@@ -307,7 +329,24 @@ impl StructType {
 impl GcObj for StructType {
     const KIND: Kind = Kind::StructType;
     fn heap_size(&self) -> usize {
-        std::mem::size_of::<StructType>() + self.fields.len() * 8 + self.methods.len() * 24
+        std::mem::size_of::<StructType>()
+            + self.fields.len() * 8
+            + self.methods.len() * 24
+            + self.variants.iter().map(|v| std::mem::size_of::<Variant>() + v.fields.len() * 8).sum::<usize>()
+    }
+}
+
+#[repr(C)]
+pub struct VariantCtor {
+    pub hdr: Header,
+    pub ty: Gc<StructType>,
+    pub tag: u16,
+}
+
+impl GcObj for VariantCtor {
+    const KIND: Kind = Kind::Variant;
+    fn heap_size(&self) -> usize {
+        std::mem::size_of::<VariantCtor>()
     }
 }
 
@@ -316,6 +355,8 @@ pub struct Instance {
     pub hdr: Header,
     pub ty: Gc<StructType>,
     pub fields: Box<[Value]>,
+    /// Which variant, for union instances (0 for structs).
+    pub tag: u16,
     /// `destroy` already ran (or is scheduled).
     pub finalized: bool,
 }

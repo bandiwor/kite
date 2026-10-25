@@ -1,0 +1,3 @@
+// error: instances are not callable
+union U { A }
+U.A(1);

@@ -48,11 +48,30 @@ fn dis(proto: Gc<Proto>, interner: &Interner, out: &mut String) {
         let mut note = String::new();
         let k = |k: usize| const_repr(proto.consts[k]);
         match op {
-            Op::Const(a) | Op::AddK(a) | Op::SubK(a) | Op::MulK(a) | Op::DivK(a) | Op::RemK(a) | Op::GetField(a)
-            | Op::SetField(a) | Op::StoreField(a) | Op::InitField(a) | Op::GetMethod(a) | Op::Closure(a)
-            | Op::Struct(a) | Op::DefMethod(a) | Op::Import(a) | Op::GetExport(a) => note = k(a.get() as usize),
-            Op::AddLocalK(_, a) | Op::GetLocalField(_, a) => note = k(a as usize),
-            Op::JNotEqLK(_, a) | Op::JNotNeLK(_, a) | Op::JNotLtLK(_, a) | Op::JNotLeLK(_, a) | Op::JNotGtLK(_, a)
+            Op::Const(a)
+            | Op::AddK(a)
+            | Op::SubK(a)
+            | Op::MulK(a)
+            | Op::DivK(a)
+            | Op::RemK(a)
+            | Op::GetField(a)
+            | Op::SetField(a)
+            | Op::StoreField(a)
+            | Op::InitField(a)
+            | Op::GetMethod(a)
+            | Op::Closure(a)
+            | Op::Struct(a)
+            | Op::DefMethod(a)
+            | Op::Import(a)
+            | Op::GetExport(a) => note = k(a.get() as usize),
+            Op::AddLocalK(_, a) | Op::GetLocalField(_, a) | Op::IsVariant(_, a) | Op::IsVariantQ(_, a) => {
+                note = k(a as usize)
+            }
+            Op::JNotEqLK(_, a)
+            | Op::JNotNeLK(_, a)
+            | Op::JNotLtLK(_, a)
+            | Op::JNotLeLK(_, a)
+            | Op::JNotGtLK(_, a)
             | Op::JNotGeLK(_, a) => note = k(a as usize),
             Op::GetGlobal(s) | Op::SetGlobal(s) | Op::StoreGlobal(s) | Op::DefGlobal(s) => {
                 note = interner.get(Sym(s.get())).to_string();

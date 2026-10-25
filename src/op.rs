@@ -227,6 +227,17 @@ pub enum Op {
     /// `[type, closure] -> [type]`: register an `impl` function under `consts[k]`.
     DefMethod(U24),
 
+    // ---- pattern matching ----
+    /// `[v] -> [bool]`: is `v` an instance of the variant (or struct) named `consts[k]`?
+    /// Operands: `arity` (number of sub-patterns, or 255 when the pattern has no parentheses), name constant.
+    IsVariant(u8, u16),
+    /// `[v, type] -> [bool]`: like `IsVariant`, and `v` must also belong to `type`.
+    IsVariantQ(u8, u16),
+    /// `[inst] -> [field]`: payload field `i` of a union variant / struct instance.
+    Unpack(u8),
+    /// No arm matched the value in local `slot`: raise an error (pushes, for the stack model).
+    MatchFail(u16),
+
     // ---- modules ----
     /// Load (or fetch from the cache) the module whose path is `consts[k]`; pushes its exports table.
     Import(U24),
@@ -257,20 +268,21 @@ impl Op {
         match *self {
             Nil | True | False | Const(_) | Dup | GetLocal(_) | GetUpval(_) | GetGlobal(_) | Closure(_)
             | NewTable(_) | Struct(_) | GetMethod(_) | AddLL(..) | SubLL(..) | MulLL(..) | GetLocalField(..)
-            | Import(_) => 1,
+            | Import(_) | MatchFail(_) => 1,
             Dup2 | GetLocal2(..) => 2,
             Pop | StoreLocal(_) | StoreUpval(_) | StoreGlobal(_) | DefGlobal(_) | Append(_) | InitField(_)
             | SetField(_) | GetIndex | DefMethod(_) | Return => -1,
             PopN(n) => -(n as i32),
             SetLocal(_) | SetUpval(_) | SetGlobal(_) | CloseUpvals(_) | Neg | Not | BitNot | AddK(_) | SubK(_)
             | MulK(_) | DivK(_) | RemK(_) | AddLocalK(..) | Jump(_) | GetField(_) | ForPrep(_) | ForLoop(_)
-            | IterNext1(_) | IterNext2(_) | ReturnNil | ReturnLocal(_) | GetExport(_) | JNotEqLL(..) | JNotNeLL(..)
-            | JNotLtLL(..) | JNotLeLL(..) | JNotGtLL(..) | JNotGeLL(..) | JNotEqLK(..) | JNotNeLK(..)
-            | JNotLtLK(..) | JNotLeLK(..) | JNotGtLK(..) | JNotGeLK(..) | Ext(_) => 0,
-            Add | Sub | Mul | Div | Rem | Pow | BitAnd | BitOr | BitXor | Shl | Shr | Eq | Ne | Lt | Le | Gt
-            | Ge | JumpIfFalse(_) | JumpIfTrue(_) | And(_) | Or(_) => -1,
+            | IterNext1(_) | IterNext2(_) | ReturnNil | ReturnLocal(_) | GetExport(_) | IsVariant(..) | Unpack(_)
+            | JNotEqLL(..) | JNotNeLL(..) | JNotLtLL(..) | JNotLeLL(..) | JNotGtLL(..) | JNotGeLL(..)
+            | JNotEqLK(..) | JNotNeLK(..) | JNotLtLK(..) | JNotLeLK(..) | JNotGtLK(..) | JNotGeLK(..) | Ext(_) => 0,
+            Add | Sub | Mul | Div | Rem | Pow | BitAnd | BitOr | BitXor | Shl | Shr | Eq | Ne | Lt | Le | Gt | Ge
+            | JumpIfFalse(_) | JumpIfTrue(_) | And(_) | Or(_) => -1,
             JNotEq(_) | JNotNe(_) | JNotLt(_) | JNotLe(_) | JNotGt(_) | JNotGe(_) | StoreField(_) | InitIndex
             | SetIndex => -2,
+            IsVariantQ(..) => -1,
             StoreIndex => -3,
             Call(n) | TailCall(n) => -(n as i32),
         }

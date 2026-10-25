@@ -39,7 +39,23 @@ pub struct FuncInfo {
     pub upvals: Vec<UpvalDesc>,
 }
 
+/// Frame slots of one pattern node.
+#[derive(Clone, Copy, Default)]
+pub struct PatInfo {
+    /// Slot holding the value this pattern is tested against.
+    pub src: u16,
+    /// For `Bind` patterns: the slot of the bound variable (equal to `src` for fields
+    /// of a variant pattern, so no copy is needed).
+    pub bind: u16,
+}
+
 pub struct Analysis {
+    /// Per pattern node (`PatId`).
+    pub pats: Vec<PatInfo>,
+    /// Hidden slot holding the scrutinee of each `match` (`MatchId`).
+    pub match_slot: Vec<u16>,
+    /// Per match arm: lowest captured slot to close when the arm is left.
+    pub arm_close: Vec<Option<u16>>,
     /// This chunk is a module: top-level names are private locals and the chunk
     /// evaluates to its exports table.
     pub module: bool,
@@ -109,6 +125,9 @@ struct TopDecl {
 }
 
 struct Analyzer<'a> {
+    pats: Vec<PatInfo>,
+    match_slot: Vec<u16>,
+    arm_close: Vec<Option<u16>>,
     module_scope_pushed: bool,
     ast: &'a Ast,
     interner: &'a Interner,
@@ -133,6 +152,9 @@ pub fn analyze(
     module: bool,
 ) -> Result<Analysis, Vec<Diag>> {
     let mut a = Analyzer {
+        pats: vec![PatInfo::default(); ast.pats.len()],
+        match_slot: vec![0; ast.matches.len()],
+        arm_close: vec![None; ast.arms.len()],
         module_scope_pushed: false,
         module,
         exports: Vec::new(),
@@ -164,6 +186,9 @@ pub fn analyze(
         return Err(a.errors);
     }
     Ok(Analysis {
+        pats: a.pats,
+        match_slot: a.match_slot,
+        arm_close: a.arm_close,
         module,
         exports: a.exports,
         import_res: a.import_res,
@@ -206,8 +231,10 @@ impl<'a> Analyzer<'a> {
                 _ => (id, false),
             };
             match self.ast.node(inner) {
-                Node::Var { name, .. } => out.push(TopDecl { node: inner, name, is_const: false, exported, import: None }),
-                Node::Const { name, .. } | Node::Struct { name, .. } => {
+                Node::Var { name, .. } => {
+                    out.push(TopDecl { node: inner, name, is_const: false, exported, import: None })
+                }
+                Node::Const { name, .. } | Node::Struct { name, .. } | Node::Union { name, .. } => {
                     out.push(TopDecl { node: inner, name, is_const: true, exported, import: None })
                 }
                 Node::Import(iid) => {
@@ -449,6 +476,86 @@ impl<'a> Analyzer<'a> {
         self.funcs[fid.0 as usize] = FuncInfo { nslots: fs.max_slot as u16, upvals: fs.upvals };
     }
 
+    /// Bind `name` for a pattern: declare it, or (in later alternatives of an
+    /// or-pattern) reuse the slot of the first alternative.
+    fn bind_name(
+        &mut self,
+        name: Sym,
+        at: NodeId,
+        binds: &mut Vec<(Sym, u16)>,
+        declaring: bool,
+        used: &mut Vec<Sym>,
+    ) -> u16 {
+        used.push(name);
+        if let Some(&(_, slot)) = binds.iter().find(|b| b.0 == name) {
+            if declaring {
+                let msg = format!("'{}' is bound more than once in this pattern", self.name(name));
+                self.error(at, msg);
+            }
+            return slot;
+        }
+        if !declaring {
+            let msg = format!("'{}' is not bound in every alternative of the or-pattern", self.name(name));
+            self.error(at, msg);
+            return 0;
+        }
+        let slot = match self.declare(name, false, at) {
+            Res::Local(s) => s,
+            _ => 0,
+        };
+        binds.push((name, slot));
+        slot
+    }
+
+    /// Resolve a pattern: allocate the slots it needs and declare its bindings.
+    /// `declaring` is false in the second and later alternatives of an or-pattern.
+    fn pattern(&mut self, pid: PatId, at: NodeId, binds: &mut Vec<(Sym, u16)>, declaring: bool, used: &mut Vec<Sym>) {
+        match self.ast.pat(pid) {
+            Pat::Wild | Pat::Num(_) | Pat::Str { .. } | Pat::Bool(_) | Pat::Nil => {}
+            Pat::Bind(name) => {
+                let slot = self.bind_name(name, at, binds, declaring, used);
+                self.pats[pid.0 as usize].bind = slot;
+            }
+            Pat::Variant { qual, args, .. } => {
+                if qual.is_some() {
+                    self.expr(qual);
+                }
+                for a in self.ast.pats_of(args) {
+                    match self.ast.pat(a) {
+                        Pat::Wild => {}
+                        Pat::Bind(name) => {
+                            // the variable's slot receives the field directly
+                            let slot = self.bind_name(name, at, binds, declaring, used);
+                            self.pats[a.0 as usize] = PatInfo { src: slot, bind: slot };
+                        }
+                        _ => {
+                            let tmp = self.alloc_slot(at);
+                            self.pats[a.0 as usize].src = tmp;
+                            self.pattern(a, at, binds, declaring, used);
+                        }
+                    }
+                }
+            }
+            Pat::Or(alts) => {
+                let src = self.pats[pid.0 as usize].src;
+                let mut first: Vec<Sym> = Vec::new();
+                for (k, alt) in self.ast.pats_of(alts).enumerate() {
+                    self.pats[alt.0 as usize].src = src;
+                    let mut names = Vec::new();
+                    self.pattern(alt, at, binds, declaring && k == 0, &mut names);
+                    names.sort();
+                    names.dedup();
+                    if k == 0 {
+                        first = names;
+                    } else if names != first {
+                        self.error(at, "all alternatives of an or-pattern must bind the same names");
+                    }
+                }
+                used.extend(first);
+            }
+        }
+    }
+
     fn begin_loop(&mut self) {
         self.push_scope();
         self.fs().loop_depth += 1;
@@ -597,11 +704,35 @@ impl<'a> Analyzer<'a> {
                     self.res[id.idx()] = r;
                 }
             }
-            Node::Struct { name, .. } => {
+            Node::Struct { name, .. } | Node::Union { name, .. } => {
                 if self.res[id.idx()] == Res::None {
                     let r = self.declare(name, true, id);
                     self.res[id.idx()] = r;
                 }
+            }
+            Node::Match(mid) => {
+                let scrutinee = self.ast.match_def(mid).scrutinee;
+                self.expr(scrutinee);
+                self.push_scope();
+                let s = self.alloc_slot(id); // the scrutinee lives here while the arms test it
+                self.match_slot[mid.0 as usize] = s;
+                for k in self.ast.arms_of(mid) {
+                    let (pat, guard, body) = {
+                        let arm = &self.ast.arms[k];
+                        (arm.pat, arm.guard, arm.body)
+                    };
+                    self.push_scope();
+                    let mut binds = Vec::new();
+                    let mut used = Vec::new();
+                    self.pats[pat.0 as usize].src = s;
+                    self.pattern(pat, id, &mut binds, true, &mut used);
+                    if guard.is_some() {
+                        self.expr(guard);
+                    }
+                    self.expr(body);
+                    self.arm_close[k] = self.pop_scope();
+                }
+                self.pop_scope();
             }
             Node::Import(_) => {
                 if !self.in_root_scope() {

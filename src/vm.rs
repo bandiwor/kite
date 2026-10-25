@@ -471,10 +471,19 @@ impl Vm {
             Some(Kind::StructType) => {
                 let ty = callee.as_gc_unchecked::<StructType>();
                 let nfields = ty.fields.len();
+                if ty.is_union() {
+                    return Err(rt_err(format!(
+                        "union '{}' cannot be called; construct a variant, e.g. {}.{}(…)",
+                        ty.name.as_str(),
+                        ty.name.as_str(),
+                        ty.variants[0].name.as_str()
+                    )));
+                }
                 let inst = self.heap.alloc(Instance {
                     hdr: Header::new(Kind::Instance),
                     ty,
                     fields: vec![Value::NIL; nfields].into_boxed_slice(),
+                    tag: 0,
                     finalized: false,
                 });
                 let ctor = ty.hook(Hook::New);
@@ -504,6 +513,34 @@ impl Vm {
                 for i in 0..argc {
                     inst.fields[i] = *first.add(i);
                 }
+                self.sp = self.sp.sub(argc + 1);
+                *self.sp = Value::from(inst);
+                self.sp = self.sp.add(1);
+                Ok(false)
+            }
+            Some(Kind::Variant) => {
+                let vc = callee.as_gc_unchecked::<VariantCtor>();
+                let ty = vc.ty;
+                let var = &ty.variants[vc.tag as usize];
+                if var.fields.len() != argc {
+                    return Err(rt_err(format!(
+                        "variant '{}.{}' takes {} value{} but {} {} given",
+                        ty.name.as_str(),
+                        var.name.as_str(),
+                        var.fields.len(),
+                        if var.fields.len() == 1 { "" } else { "s" },
+                        argc,
+                        if argc == 1 { "was" } else { "were" }
+                    )));
+                }
+                let fields: Box<[Value]> = std::slice::from_raw_parts(self.sp.sub(argc), argc).into();
+                let inst = self.heap.alloc(Instance {
+                    hdr: Header::new(Kind::Instance),
+                    ty,
+                    fields,
+                    tag: vc.tag,
+                    finalized: false,
+                });
                 self.sp = self.sp.sub(argc + 1);
                 *self.sp = Value::from(inst);
                 self.sp = self.sp.add(1);
@@ -574,6 +611,82 @@ impl Vm {
         r
     }
 
+    // ---- unions & patterns ---------------------------------------------------------------
+
+    /// Fresh runtime type from a compile-time template.  Unions get their variant
+    /// values here: a shared instance for unit variants, a constructor otherwise.
+    fn instantiate_type(&mut self, tmpl: Gc<StructType>) -> Gc<StructType> {
+        let variants = tmpl
+            .variants
+            .iter()
+            .map(|v| Variant { name: v.name, fields: v.fields.clone(), value: Value::NIL })
+            .collect();
+        let mut ty = self.heap.alloc(StructType {
+            hdr: Header::new(Kind::StructType),
+            name: tmpl.name,
+            fields: tmpl.fields.clone(),
+            variants,
+            methods: Vec::new(),
+            hooks: [Value::NIL; HOOK_COUNT],
+        });
+        for tag in 0..ty.variants.len() {
+            let value = if ty.variants[tag].fields.is_empty() {
+                let inst = self.heap.alloc(Instance {
+                    hdr: Header::new(Kind::Instance),
+                    ty,
+                    fields: Box::new([]),
+                    tag: tag as u16,
+                    finalized: false,
+                });
+                Value::from(inst)
+            } else {
+                Value::from(self.heap.alloc(VariantCtor { hdr: Header::new(Kind::Variant), ty, tag: tag as u16 }))
+            };
+            ty.variants[tag].value = value;
+        }
+        ty
+    }
+
+    /// Does `v` belong to the variant (or struct) `name`?  `arity` 255 accepts any
+    /// number of fields; otherwise it must match.  With `ty`, the type must be that one.
+    fn variant_matches(&mut self, v: Value, name: Gc<Str>, arity: u8, ty: Option<Value>) -> RtResult<bool> {
+        let qual = match ty {
+            Some(t) => match t.as_gc::<StructType>() {
+                Some(t) => Some(t),
+                None => {
+                    return Err(rt_err(format!(
+                        "the qualifier of a pattern must be a struct or union, got {}",
+                        self.type_of(t)
+                    )))
+                }
+            },
+            None => None,
+        };
+        let Some(inst) = v.as_gc::<Instance>() else { return Ok(false) };
+        if qual.is_some_and(|t| t != inst.ty) {
+            return Ok(false);
+        }
+        let (matches, n) = if inst.ty.is_union() {
+            let var = &inst.ty.variants[inst.tag as usize];
+            (str_eq(var.name, name), var.fields.len())
+        } else {
+            (str_eq(inst.ty.name, name), inst.fields.len())
+        };
+        if !matches {
+            return Ok(false);
+        }
+        if arity != 255 && arity as usize != n {
+            return Err(rt_err(format!(
+                "pattern '{}' has {} field{} but the value has {}",
+                name.as_str(),
+                arity,
+                if arity == 1 { "" } else { "s" },
+                n
+            )));
+        }
+        Ok(true)
+    }
+
     // ---- modules -------------------------------------------------------------------
 
     /// Directory that relative imports are resolved against: the directory of the
@@ -629,9 +742,8 @@ impl Vm {
     }
 
     fn run_module(&mut self, name: &str, text: &str) -> RtResult<Value> {
-        let (proto, _) = self
-            .compile_chunk(name, text, true)
-            .map_err(|e| rt_err(format!("while importing '{}':\n{}", name, e)))?;
+        let (proto, _) =
+            self.compile_chunk(name, text, true).map_err(|e| rt_err(format!("while importing '{}':\n{}", name, e)))?;
         let closure = self.heap.alloc(Closure { hdr: Header::new(Kind::Closure), proto, upvals: Box::new([]) });
         self.call_value(Value::from(closure), &[])
     }
@@ -753,6 +865,12 @@ impl Vm {
                 if let Some(i) = inst.ty.field_index(key) {
                     return Ok(inst.fields[i]);
                 }
+                if inst.ty.is_union() {
+                    let var = &inst.ty.variants[inst.tag as usize];
+                    if let Some(i) = var.fields.iter().position(|&f| str_eq(f, key)) {
+                        return Ok(inst.fields[i]);
+                    }
+                }
                 if let Some(f) = self.instance_hook(obj, Hook::Get) {
                     return self.call_value(f, &[obj, Value::from(key)]);
                 }
@@ -764,6 +882,9 @@ impl Vm {
             Some(Kind::Table) => Ok(unsafe { obj.as_gc_unchecked::<Table>() }.get_str(key)),
             Some(Kind::StructType) => {
                 let ty = unsafe { obj.as_gc_unchecked::<StructType>() };
+                if let Some(i) = ty.variant_index(key) {
+                    return Ok(ty.variants[i].value);
+                }
                 ty.method(key)
                     .ok_or_else(|| rt_err(format!("struct '{}' has no function '{}'", ty.name.as_str(), key.as_str())))
             }
@@ -778,6 +899,13 @@ impl Vm {
                 if let Some(i) = inst.ty.field_index(key) {
                     inst.fields[i] = v;
                     return Ok(());
+                }
+                if inst.ty.is_union() {
+                    let pos = inst.ty.variants[inst.tag as usize].fields.iter().position(|&f| str_eq(f, key));
+                    if let Some(i) = pos {
+                        inst.fields[i] = v;
+                        return Ok(());
+                    }
                 }
                 if let Some(f) = self.instance_hook(obj, Hook::Set) {
                     self.call_value(f, &[obj, Value::from(key), v])?;
@@ -1017,7 +1145,11 @@ impl Vm {
             Some(Kind::Upvalue) => out.push_str("<upvalue>"),
             Some(Kind::StructType) => {
                 let t = unsafe { v.as_gc_unchecked::<StructType>() };
-                let _ = write!(out, "<struct {}>", t.name.as_str());
+                let _ = write!(out, "<{} {}>", if t.is_union() { "union" } else { "struct" }, t.name.as_str());
+            }
+            Some(Kind::Variant) => {
+                let c = unsafe { v.as_gc_unchecked::<VariantCtor>() };
+                let _ = write!(out, "<variant {}.{}>", c.ty.name.as_str(), c.ty.variants[c.tag as usize].name.as_str());
             }
             Some(Kind::Instance) => {
                 let inst = unsafe { v.as_gc_unchecked::<Instance>() };
@@ -1032,6 +1164,26 @@ impl Vm {
                                 inst.ty.name.as_str()
                             )))
                         }
+                    }
+                    return Ok(());
+                }
+                if inst.ty.is_union() {
+                    // `Circle(2)` / `Point`
+                    out.push_str(inst.ty.variants[inst.tag as usize].name.as_str());
+                    if !inst.fields.is_empty() {
+                        if depth > 6 {
+                            out.push_str("(...)");
+                            return Ok(());
+                        }
+                        out.push('(');
+                        let vals: Vec<Value> = inst.fields.to_vec();
+                        for (i, val) in vals.into_iter().enumerate() {
+                            if i > 0 {
+                                out.push_str(", ");
+                            }
+                            self.write_value(val, out, true, depth + 1)?;
+                        }
+                        out.push(')');
                     }
                     return Ok(());
                 }
@@ -1869,13 +2021,7 @@ impl Vm {
                     // ---- structs
                     Op::Struct(_) => {
                         let tmpl = (*consts.add(op.imm24() as usize)).as_gc_unchecked::<StructType>();
-                        let ty = self.heap.alloc(StructType {
-                            hdr: Header::new(Kind::StructType),
-                            name: tmpl.name,
-                            fields: tmpl.fields.clone(),
-                            methods: Vec::new(),
-                            hooks: [Value::NIL; HOOK_COUNT],
-                        });
+                        let ty = self.instantiate_type(tmpl);
                         push!(Value::from(ty));
                         gc_check!();
                     }
@@ -1889,6 +2035,33 @@ impl Vm {
                             }
                             None => throw!("`impl` target must be a struct, got {}", self.type_of(target)),
                         }
+                    }
+
+                    // ---- pattern matching
+                    Op::IsVariant(arity, _) => {
+                        let name = (*consts.add(op_name_k(op))).as_gc_unchecked::<Str>();
+                        let v = top!();
+                        let r = protect!(self.variant_matches(v, name, arity, None));
+                        *sp.sub(1) = Value::bool(r);
+                    }
+                    Op::IsVariantQ(arity, _) => {
+                        let name = (*consts.add(op_name_k(op))).as_gc_unchecked::<Str>();
+                        let (ty, v) = (peek!(0), peek!(1));
+                        let r = protect!(self.variant_matches(v, name, arity, Some(ty)));
+                        sp = sp.sub(1);
+                        *sp.sub(1) = Value::bool(r);
+                    }
+                    Op::Unpack(i) => {
+                        let v = top!();
+                        match v.as_gc::<Instance>() {
+                            Some(inst) if (i as usize) < inst.fields.len() => *sp.sub(1) = inst.fields[i as usize],
+                            _ => throw!("cannot unpack field {} of {}", i, self.type_of(v)),
+                        }
+                    }
+                    Op::MatchFail(s) => {
+                        let v = *base.add(s as usize);
+                        let shown = protect!(self.repr(v));
+                        throw!("no match arm matched the value {}", shown);
                     }
 
                     // ---- modules
@@ -2018,5 +2191,14 @@ pub fn nth_char(s: &str, n: usize) -> Option<char> {
         s.as_bytes().get(n).map(|&b| b as char)
     } else {
         s.chars().nth(n)
+    }
+}
+
+/// Name-constant operand of `IsVariant` / `IsVariantQ`.
+#[inline(always)]
+fn op_name_k(op: Op) -> usize {
+    match op {
+        Op::IsVariant(_, k) | Op::IsVariantQ(_, k) => k as usize,
+        _ => 0,
     }
 }

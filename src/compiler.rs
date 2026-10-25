@@ -393,7 +393,40 @@ impl<'a> Compiler<'a> {
                 let ty = self.heap.alloc(StructType {
                     hdr: Header::new(Kind::StructType),
                     name: sname,
+                    variants: Vec::new(),
                     fields: fs,
+                    methods: Vec::new(),
+                    hooks: [Value::NIL; HOOK_COUNT],
+                });
+                let k = self.add_const(Value::from(ty));
+                self.emit(Op::Struct(k));
+                let res = self.an.res[id.idx()];
+                self.store_decl(res, name);
+            }
+            Node::Union { name, variants } => {
+                let uname = self.heap.intern(self.interner.get(name));
+                let vs: Vec<Variant> = self
+                    .ast
+                    .list(variants)
+                    .iter()
+                    .map(|&v| {
+                        let d = &self.ast.variants[v as usize];
+                        Variant {
+                            name: self.heap.intern(self.interner.get(d.name)),
+                            fields: self
+                                .ast
+                                .syms_of(d.fields)
+                                .map(|f| self.heap.intern(self.interner.get(f)))
+                                .collect(),
+                            value: Value::NIL,
+                        }
+                    })
+                    .collect();
+                let ty = self.heap.alloc(StructType {
+                    hdr: Header::new(Kind::StructType),
+                    name: uname,
+                    fields: Vec::new(),
+                    variants: vs,
                     methods: Vec::new(),
                     hooks: [Value::NIL; HOOK_COUNT],
                 });
@@ -758,7 +791,9 @@ impl<'a> Compiler<'a> {
                 // (this `nil` is dead code and removed by the peephole).
                 self.emit(Op::Nil);
             }
-            Node::Var { .. }
+            Node::Match(mid) => self.match_expr(id, mid),
+            Node::Union { .. }
+            | Node::Var { .. }
             | Node::Const { .. }
             | Node::Struct { .. }
             | Node::Impl { .. }
@@ -767,6 +802,144 @@ impl<'a> Compiler<'a> {
                 unreachable!("declarations are statements")
             }
         }
+    }
+
+    // ---- match -----------------------------------------------------------------
+
+    /// The scrutinee is stored in a hidden local; each arm tests its pattern against
+    /// locals (failures jump to the next arm), binds variables straight into their
+    /// slots, checks the guard and evaluates the body.  The stack is empty of pattern
+    /// temporaries at every jump, so all failure paths simply share the next-arm label.
+    fn match_expr(&mut self, id: NodeId, mid: MatchId) {
+        let def = self.ast.match_def(mid);
+        let d = self.fb().depth;
+        self.expr(def.scrutinee);
+        let slot = self.an.match_slot[mid.0 as usize];
+        self.at(id);
+        self.emit(Op::StoreLocal(slot));
+        let mut to_end = Vec::new();
+        for k in self.ast.arms_of(mid) {
+            let (pat, guard, body) = {
+                let a = &self.ast.arms[k];
+                (a.pat, a.guard, a.body)
+            };
+            let close = self.an.arm_close[k];
+            let mut fails = Vec::new();
+            self.pat_test(pat, &mut fails);
+            if guard.is_some() {
+                fails.extend(self.cond_false(guard));
+            }
+            self.expr(body);
+            if let Some(m) = close {
+                self.at(id);
+                self.emit(Op::CloseUpvals(m));
+            }
+            self.at(id);
+            to_end.push(self.emit_jump(Op::Jump(I24::ZERO)));
+            for f in fails {
+                self.patch_here(f);
+            }
+            self.set_depth(d);
+            if let Some(m) = close {
+                // variables of a failed arm may have been captured by a guard
+                self.emit(Op::CloseUpvals(m));
+            }
+        }
+        self.at(id);
+        self.emit(Op::MatchFail(slot));
+        for j in to_end {
+            self.patch_here(j);
+        }
+    }
+
+    /// Emit the test of one pattern against its source slot; every failing check
+    /// jumps (patch list `fails`), a success falls through with bindings assigned.
+    fn pat_test(&mut self, pid: PatId, fails: &mut Vec<usize>) {
+        let info = self.an.pats[pid.0 as usize];
+        let at_pat = self.ast.pat_spans[pid.0 as usize];
+        self.cur = at_pat;
+        match self.ast.pat(pid) {
+            Pat::Wild => {}
+            Pat::Bind(_) => {
+                if info.bind != info.src {
+                    self.emit(Op::GetLocal(info.src));
+                    self.emit(Op::StoreLocal(info.bind));
+                }
+            }
+            Pat::Num(n) => {
+                let k = self.num_const(n);
+                self.pat_literal(info.src, Op::Const(k), fails);
+            }
+            Pat::Str { start, len } => {
+                let raw = &self.source.text[start as usize..(start + len) as usize];
+                let s = unescape(raw).unwrap_or_default();
+                let k = self.str_const(&s);
+                self.pat_literal(info.src, Op::Const(k), fails);
+            }
+            Pat::Bool(b) => self.pat_literal(info.src, if b { Op::True } else { Op::False }, fails),
+            Pat::Nil => self.pat_literal(info.src, Op::Nil, fails),
+            Pat::Variant { qual, name, args, parens } => {
+                self.emit(Op::GetLocal(info.src));
+                if args.len >= 255 {
+                    self.error(at_pat, "too many fields in a pattern (max 254)");
+                }
+                let arity = if parens { args.len.min(254) as u8 } else { 255 };
+                let nk = self.sym_const(name);
+                let nk = match u16::try_from(nk.get()) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        self.error(at_pat, "too many constants in this function to compile a match");
+                        0
+                    }
+                };
+                if qual.is_some() {
+                    self.expr(qual);
+                    self.cur = at_pat;
+                    self.emit(Op::IsVariantQ(arity, nk));
+                } else {
+                    self.emit(Op::IsVariant(arity, nk));
+                }
+                fails.push(self.emit_jump(Op::JumpIfFalse(I24::ZERO)));
+                for (j, a) in self.ast.pats_of(args).enumerate() {
+                    if matches!(self.ast.pat(a), Pat::Wild) {
+                        continue;
+                    }
+                    self.cur = at_pat;
+                    self.emit(Op::GetLocal(info.src));
+                    self.emit(Op::Unpack(j as u8));
+                    self.emit(Op::StoreLocal(self.an.pats[a.0 as usize].src));
+                    self.pat_test(a, fails);
+                }
+            }
+            Pat::Or(alts) => {
+                let n = alts.len as usize;
+                let mut ok = Vec::new();
+                for (i, alt) in self.ast.pats_of(alts).enumerate() {
+                    if i + 1 == n {
+                        // the last alternative's failures are the whole pattern's failures
+                        self.pat_test(alt, fails);
+                    } else {
+                        let mut alt_fails = Vec::new();
+                        self.pat_test(alt, &mut alt_fails);
+                        ok.push(self.emit_jump(Op::Jump(I24::ZERO)));
+                        for f in alt_fails {
+                            self.patch_here(f);
+                        }
+                    }
+                }
+                for j in ok {
+                    self.patch_here(j);
+                }
+            }
+        }
+    }
+
+    /// `src == literal`, else fail.
+    fn pat_literal(&mut self, src: u16, lit: Op, fails: &mut Vec<usize>) {
+        self.emit(Op::GetLocal(src));
+        self.emit(lit);
+        self.emit(Op::Eq);
+        fails.push(self.emit_jump(Op::JumpIfFalse(I24::ZERO)));
     }
 
     fn assign(&mut self, id: NodeId, op: Option<BinOp>, target: NodeId, value: NodeId) {

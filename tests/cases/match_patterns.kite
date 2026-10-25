@@ -1,0 +1,143 @@
+// literals, wildcard, bindings
+fn classify(x) {
+    match x {
+        0 => "zero",
+        1 | 2 | 3 => "small",
+        -1 => "minus one",
+        "hi" => "greeting",
+        true => "yes",
+        false => "no",
+        nil => "nothing",
+        n if type(n) == "number" && n > 100 => "big " + n,
+        n if type(n) == "number" => "number " + n,
+        _ => "other",
+    }
+}
+print(classify(0), classify(2), classify(-1));   // expect: zero small minus one
+print(classify("hi"), classify(true), classify(false), classify(nil));   // expect: greeting yes no nothing
+print(classify(500), classify(7), classify("x"), classify([1]));   // expect: big 500 number 7 other other
+
+// a binding at the top level takes the whole value; it is not visible after the match
+const r = match 40 + 2 { v => v * 2 };
+print(r);   // expect: 84
+
+// the scrutinee is evaluated exactly once
+var evals = 0;
+fn next() { evals += 1; evals }
+print(match next() { 1 => "one", _ => "other" }, evals);   // expect: one 1
+
+// variant patterns: unqualified, qualified, nested, with wildcards
+union Expr { Num(n), Add(l, r), Mul(l, r), Neg(e) }
+fn eval(e) {
+    match e {
+        Num(n) => n,
+        Add(l, r) => eval(l) + eval(r),
+        Mul(Num(0), _) | Mul(_, Num(0)) => 0,
+        Mul(l, r) => eval(l) * eval(r),
+        Neg(e) => -eval(e),
+    }
+}
+const tree = Expr.Add(Expr.Num(2), Expr.Mul(Expr.Num(3), Expr.Neg(Expr.Num(4))));
+print(eval(tree), eval(Expr.Mul(Expr.Num(0), tree)));   // expect: -10 0
+fn show(e) {
+    match e {
+        Expr.Num(n) => "" + n,
+        Expr.Add(l, r) => "(" + show(l) + " + " + show(r) + ")",
+        Expr.Mul(l, r) => show(l) + " * " + show(r),
+        Expr.Neg(e) => "-" + show(e),
+    }
+}
+print(show(tree));   // expect: (2 + 3 * -4)
+
+// qualified patterns also check the type; unqualified ones only the variant name
+union A { X(v), Y }
+union B { X(v), Y }
+print(match B.X(1) { A.X(v) => "A", B.X(v) => "B", _ => "none" });   // expect: B
+print(match B.X(1) { X(v) => "name only", _ => "none" });   // expect: name only
+print(match A.Y { B.Y => "B", Y => "any Y" });   // expect: any Y
+
+// no parentheses = any number of fields
+print(match Expr.Add(1, 2) { Num => "num", Add => "add" });   // expect: add
+
+// or-patterns with bindings, nested or-patterns
+union Sh { Circle(r), Sphere(r), Square(s) }
+fn radius(s) { match s { Circle(r) | Sphere(r) => r, Square(_) => 0 } }
+print(radius(Sh.Circle(2)), radius(Sh.Sphere(3)), radius(Sh.Square(9)));   // expect: 2 3 0
+print(match Sh.Square(4) { Circle(1 | 2) => "small", Square(1 | 4 | 9) => "perfect", _ => "?" });   // expect: perfect
+
+// guards see the bindings and may fall through to later arms
+fn sign(e) {
+    match e {
+        Expr.Num(n) if n < 0 => "negative",
+        Expr.Num(n) if n == 0 => "zero",
+        Expr.Num(_) => "positive",
+        _ => "not a number",
+    }
+}
+print(sign(Expr.Num(-3)), sign(Expr.Num(0)), sign(Expr.Num(8)), sign(Expr.Neg(Expr.Num(1))));   // expect: negative zero positive not a number
+
+// struct patterns match by type name and position
+struct Pt { x, y }
+print(match Pt(3, 4) { Pt(0, 0) => "origin", Pt(x, 0) => "on x", Pt(x, y) => "at " + x + "," + y });   // expect: at 3,4
+print(match Pt(5, 0) { Pt(0, 0) => "origin", Pt(x, 0) => "on x " + x, Pt(x, y) => "xy" });   // expect: on x 5
+
+// match is an expression: argument, operand, loop value, nested
+print(1 + match 2 { 2 => 40, _ => 0 } + 1);   // expect: 42
+var total = 0;
+for i in 0..6 {
+    total += match i % 3 { 0 => 10, 1 => { var t = i; t * 2 }, _ => match i { 2 => 100, _ => 1000 } };
+}
+print(total);   // expect: 1130
+const found = loop {
+    var n = 0;
+    break match n { 0 => "first", _ => "other" };
+};
+print(found);   // expect: first
+
+// arm bodies can assign, break and continue
+var hits = 0;
+for i in 0..10 {
+    match i {
+        2 => hits += 1,
+        5 => continue,
+        7 => break,
+        _ => {}
+    }
+    hits += 10;
+}
+print(hits);   // expect: 61
+
+// closures capture pattern bindings (fresh per evaluation)
+const fs = [];
+for e in [Expr.Num(1), Expr.Num(2), Expr.Neg(Expr.Num(3))] {
+    match e {
+        Num(n) => push(fs, || => n * 10),
+        Neg(Num(n)) if n > 5 => push(fs, || => 0),
+        Neg(Num(n)) => push(fs, || => -n),
+        _ => {}
+    }
+}
+print(fs[0](), fs[1](), fs[2]());   // expect: 10 20 -3
+
+// a guard that captures a binding and then fails does not leak it into the next arm
+const gs = [];
+match 5 { n if { push(gs, || => n); false } => 1, n => { n = 6; 2 } }
+print(gs[0]());   // expect: 5
+
+// option-like unions
+union Option { None, Some(v) }
+fn first(t) { if len(t) == 0 { Option.None } else { Option.Some(t[0]) } }
+fn unwrap_or(o, d) { match o { Some(v) => v, None => d } }
+print(unwrap_or(first([]), "empty"), unwrap_or(first([7, 8]), "empty"));   // expect: empty 7
+
+// linked list
+union List { Nil, Cons(head, tail) }
+fn sum(l) { match l { Cons(h, t) => h + sum(t), Nil => 0 } }
+fn from_array(a, i) { if i == len(a) { List.Nil } else { List.Cons(a[i], from_array(a, i + 1)) } }
+print(sum(from_array([1, 2, 3, 4], 0)));   // expect: 10
+
+// not matching anything is a runtime error that names the value
+print(pcall(|| => match Expr.Num(1) { Add(_, _) => 1 })[1]);   // expect: no match arm matched the value Num(1)
+print(pcall(|| => match 3 { 1 => "a", 2 => "b" })[1]);   // expect: no match arm matched the value 3
+print(pcall(|| => match Expr.Add(1, 2) { Add(a) => a })[1]);   // expect: pattern 'Add' has 1 field but the value has 2
+print(pcall(|| => match 1 { A.X(_) => 1 })[1]);   // expect: no match arm matched the value 1

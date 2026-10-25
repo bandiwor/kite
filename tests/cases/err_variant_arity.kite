@@ -1,0 +1,3 @@
+// error: takes 2 values but 1 was given
+union U { A(x, y) }
+U.A(1);
