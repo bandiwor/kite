@@ -1,12 +1,29 @@
-// Errors are values you can catch with pcall; uncaught ones print a trace.
+// Expected failures are values: `Result` (Ok / Err) and `Option` (Some / None), passed along with `?`.
+// Bugs (a wrong type, a bad index, `panic(..)`) are panics: they end the program with a stack trace.
 fn parse_age(s) {
-    const n = num(s);
-    if n == nil { error("not a number: " + s) }
-    if n < 0 { error("negative age") }
-    n
+    const n = parse_num(s)?;                       // Err(..) is returned right away
+    if n < 0 { return Err(Error("negative age"):with_kind("range")); }
+    Ok(n)
+}
+
+fn describe(s) {
+    match parse_age(s) {
+        Ok(n) => "age " + n,
+        Err(e) if e.kind == "range" => "out of range: " + e,
+        Err(e) => "error: " + e,
+    }
 }
 
 for input in ["42", "x1", "-3"] {
-    const r = pcall(parse_age, input);
-    print(input, "->", if r[0] { "ok " + r[1] } else { "error: " + r[1] });
+    print(input, "->", describe(input));
 }
+
+// Option: absent values made explicit
+fn first_even(t) {
+    for v in t { if v % 2 == 0 { return Some(v); } }
+    None
+}
+print(first_even([1, 3, 6, 8]):map(|v| => v * 10):unwrap_or(0), first_even([1, 3]):unwrap_or(0));
+
+// at a program boundary a panic can still be turned into a value
+print(catch_panic(|| => 1 + nil));

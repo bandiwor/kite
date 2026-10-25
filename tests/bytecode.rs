@@ -66,6 +66,8 @@ fn compiled_code_is_structurally_valid() {
                 return match v { A(1 | 2) => 1, A(x) if x > 5 => x, B(_, 0) | C => 0, B(x, y) => x + y, 3 => 7, _ => -1 };
             }
             print(m(U.A(1)), m(U.C), m(3));
+            fn t(r) { const v = r?; for i in 0..v { if i == 3 { Err(i)?; } } return Ok(v); }
+            print(t(Ok(2)), t(Ok(9)), t(Err(0)));
         "#;
         for optimize in [true, false] {
             let mut vm = Vm::new();
@@ -95,11 +97,7 @@ fn fused_ops_use_double_instructions_only_when_optimizing() {
         let (proto, _) = vm.compile("t.kite", src).unwrap();
         let mut protos = Vec::new();
         all_protos(proto, &mut protos);
-        protos
-            .iter()
-            .flat_map(|p| p.code.to_vec())
-            .filter(|o| matches!(o, Op::JNotLtLL(..) | Op::JNotLtLK(..)))
-            .count()
+        protos.iter().flat_map(|p| p.code.to_vec()).filter(|o| matches!(o, Op::JNotLtLL(..) | Op::JNotLtLK(..))).count()
     };
     assert_eq!(count(false), 0);
     assert!(count(true) >= 2);

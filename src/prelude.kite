@@ -1,0 +1,66 @@
+// The part of the standard library that is written in Kite itself.
+// Runs once when a `Vm` is created; `Vm` then remembers `Option`, `Result` and `Error`
+// so that natives and the `?` operator can build and take apart their values.
+
+union Option { None, Some(value) }
+union Result { Ok(value), Err(error) }
+struct Error { message, kind }
+
+const None = Option.None;
+const Some = Option.Some;
+const Ok = Result.Ok;
+const Err = Result.Err;
+
+impl Error {
+    // Error("message"); the kind (default "error") is a free-form category to match on
+    fn new(self, message) {
+        self.message = str(message);
+        self.kind = "error";
+    }
+    fn with_kind(self, kind) { self.kind = kind; self }
+    fn str(self) { self.message }
+}
+
+impl Option {
+    fn is_some(self) { match self { Some(_) => true, None => false } }
+    fn is_none(self) { match self { Some(_) => false, None => true } }
+    fn unwrap(self) { match self { Some(v) => v, None => panic("called `unwrap` on a `None` value") } }
+    fn expect(self, msg) { match self { Some(v) => v, None => panic(msg) } }
+    fn unwrap_or(self, default) { match self { Some(v) => v, None => default } }
+    fn unwrap_or_else(self, f) { match self { Some(v) => v, None => f() } }
+    fn map(self, f) { match self { Some(v) => Some(f(v)), None => None } }
+    fn and_then(self, f) { match self { Some(v) => f(v), None => None } }
+    fn or_else(self, f) { match self { Some(_) => self, None => f() } }
+    fn filter(self, pred) { match self { Some(v) if pred(v) => self, _ => None } }
+    fn ok_or(self, err) { match self { Some(v) => Ok(v), None => Err(err) } }
+    fn eq(a, b) {
+        match a {
+            Option.Some(x) => match b { Option.Some(y) => x == y, _ => false },
+            Option.None => match b { Option.None => true, _ => false },
+            _ => false,
+        }
+    }
+}
+
+impl Result {
+    fn is_ok(self) { match self { Ok(_) => true, Err(_) => false } }
+    fn is_err(self) { match self { Ok(_) => false, Err(_) => true } }
+    fn unwrap(self) { match self { Ok(v) => v, Err(e) => panic("called `unwrap` on an `Err` value: " + str(e)) } }
+    fn expect(self, msg) { match self { Ok(v) => v, Err(e) => panic(msg + ": " + str(e)) } }
+    fn unwrap_err(self) { match self { Err(e) => e, Ok(v) => panic("called `unwrap_err` on an `Ok` value: " + str(v)) } }
+    fn unwrap_or(self, default) { match self { Ok(v) => v, Err(_) => default } }
+    fn unwrap_or_else(self, f) { match self { Ok(v) => v, Err(e) => f(e) } }
+    fn map(self, f) { match self { Ok(v) => Ok(f(v)), Err(_) => self } }
+    fn map_err(self, f) { match self { Ok(_) => self, Err(e) => Err(f(e)) } }
+    fn and_then(self, f) { match self { Ok(v) => f(v), Err(_) => self } }
+    fn or_else(self, f) { match self { Ok(_) => self, Err(e) => f(e) } }
+    fn ok(self) { match self { Ok(v) => Some(v), Err(_) => None } }
+    fn err(self) { match self { Ok(_) => None, Err(e) => Some(e) } }
+    fn eq(a, b) {
+        match a {
+            Result.Ok(x) => match b { Result.Ok(y) => x == y, _ => false },
+            Result.Err(x) => match b { Result.Err(y) => x == y, _ => false },
+            _ => false,
+        }
+    }
+}

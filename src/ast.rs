@@ -163,6 +163,8 @@ pub enum Node {
     Break(NodeId),
     Continue,
     Return(NodeId),
+    /// `expr?`: unwrap an `Ok`/`Some`, or return the `Err`/`None` from the function.
+    Try(NodeId),
     Var {
         name: Sym,
         init: NodeId,
@@ -541,6 +543,11 @@ impl Ast {
                 line!(")");
             }
             Node::Continue => line!("(continue)"),
+            Node::Try(e) => {
+                line!("(try");
+                self.dump_node(e, i, src, ind + 1, out);
+                line!(")");
+            }
             Node::Return(v) => {
                 line!("(return");
                 if v.is_some() {

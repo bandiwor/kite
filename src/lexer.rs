@@ -119,6 +119,7 @@ pub fn lex(src: &str) -> Vec<Token> {
             b';' => Semi,
             b':' => Colon,
             b'~' => Tilde,
+            b'?' => Question,
             b'.' => {
                 if at!(i) == b'.' {
                     i += 1;

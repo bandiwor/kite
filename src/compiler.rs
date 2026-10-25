@@ -791,6 +791,11 @@ impl<'a> Compiler<'a> {
                 // (this `nil` is dead code and removed by the peephole).
                 self.emit(Op::Nil);
             }
+            Node::Try(e) => {
+                self.expr(e);
+                self.at(id);
+                self.emit(Op::Try);
+            }
             Node::Match(mid) => self.match_expr(id, mid),
             Node::Union { .. }
             | Node::Var { .. }

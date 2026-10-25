@@ -675,6 +675,12 @@ impl<'a> Analyzer<'a> {
                     self.error(id, "`continue` outside of a loop");
                 }
             }
+            Node::Try(e) => {
+                if self.module && self.fns.len() == 1 {
+                    self.error(id, "`?` is not allowed at the top level of a module (it returns from the function)");
+                }
+                self.expr(e);
+            }
             Node::Return(v) => {
                 if self.module && self.fns.len() == 1 {
                     self.error(id, "`return` is not allowed at the top level of a module");

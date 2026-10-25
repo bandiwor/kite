@@ -259,24 +259,74 @@ print(geometry.origin(), geometry.how_many());
 (для общего изменяемого состояния экспортируйте функции). `import`/`export` допустимы только на верхнем уровне файла,
 `return` на верхнем уровне модуля запрещён. В обычном скрипте `export` игнорируется, так что файл может работать и сам по себе.
 
-### Ошибки
+### Ошибки: `Result`, `Option` и паники
 
-Ошибки времени выполнения печатают сообщение, фрагмент исходника и стек вызовов (кадры, замещённые хвостовым вызовом, в стеке не видны).
+Как в Rust, ошибки двух видов, и try/catch в языке нет.
+
+**Ожидаемые неудачи** (файла нет, строка не число, пустой список) — это **значения**: `Result` (`Ok(v)` / `Err(e)`) и `Option` (`Some(v)` / `None`).
+Это обычные union'ы, доступные везде без импорта; `Error` — стандартный тип ошибки (`message`, `kind`).
 
 ```kite
-const r = pcall(|| => 1 + nil);       // [false, "invalid operands for '+': number and nil"]
-assert(cond, "message");   error("boom");
+fn parse_age(s) {
+    const n = parse_num(s)?;                 // Err(..) сразу возвращается из parse_age, Ok(v) даёт v
+    if n < 0 { return Err(Error("negative age"):with_kind("range")); }
+    Ok(n)
+}
+
+match parse_age(input) {
+    Ok(n) => print("age", n),
+    Err(e) if e.kind == "range" => print("bad range:", e),
+    Err(e) => print("error:", e),            // print(e) показывает message
+}
 ```
+
+`expr?` работает и для `Option`: `None` возвращается из функции. Оператор возвращает значение *как есть* (`Err`/`None`) из
+ближайшей функции (лямбда — отдельная функция), поэтому он может стоять где угодно в выражении: `Ok(a? + b?)`, `f(x?)`,
+`r?.name`. Не `Option`/`Result` — паника. На верхнем уровне модуля `?` запрещён (как `return`).
+
+| Option | |
+|---|---|
+| `is_some() is_none()` | проверки |
+| `unwrap() expect(msg)` | значение или паника |
+| `unwrap_or(d) unwrap_or_else(f)` | значение или запасное |
+| `map(f) and_then(f) or_else(f) filter(p)` | преобразования |
+| `ok_or(err)` | `Option` → `Result` |
+
+| Result | |
+|---|---|
+| `is_ok() is_err()` | проверки |
+| `unwrap() expect(msg) unwrap_err()` | значение (ошибку) или паника |
+| `unwrap_or(d) unwrap_or_else(f)` | `f` получает ошибку |
+| `map(f) map_err(f) and_then(f) or_else(f)` | преобразования |
+| `ok() err()` | `Result` → `Option` |
+
+Сравнение `==` структурное (`Some(1) == Some(1)`). `Error(msg)` создаёт ошибку, `:with_kind("parse")` задаёт категорию
+для сопоставления. `Err` может нести любое значение, а не только `Error`. Для перехода от `nil` к `Option` есть `option(x)`,
+для чисел — `parse_num(s)` (`Ok(число)` или `Err`). Свои функции стандартной библиотеки, которые могут не получиться, тоже
+стоит возвращать как `Result`.
+
+**Паники** — это то, что нельзя «обработать»: баг или невозможная операция (`1 + nil`, индекс вне диапазона, вызов `nil`,
+несовпадение арности, `assert`, `panic("msg")`, `unwrap()` у `None`, неисчерпывающий `match`, переполнение стека). Паника
+разматывает всю программу и печатает сообщение, фрагмент исходника и стек вызовов (кадры, замещённые хвостовым вызовом,
+не видны; кадры prelude скрыты). Деструкторы при этом выполняются.
+
+```kite
+assert(cond, "message");   panic("boom");
+const r = catch_panic(|| => 1 + nil);   // Err(Error) с kind "panic": последний рубеж для границ программы
+```
+
+`catch_panic(f, args…)` возвращает `Ok(результат)` или `Err(Error)`; его место — на границе (тесты, REPL, плагины, обработчик запросов),
+а не в обычной логике: ожидаемое выражайте через `Result`.
 
 ### Встроенные функции
 
 | | |
 |---|---|
 | ввод/вывод | `print(...)` (с переводом строки), `write(...)`, `input(prompt?)` |
-| типы | `type(x)`, `str(x)`, `num(x)` (nil, если не число), `len(x)` |
+| типы | `type(x)`, `str(x)`, `num(x)` (nil, если не число; для ошибки с причиной — `parse_num`), `len(x)` |
 | таблицы | `push(t, v…)`, `pop(t)`, `insert(t, i, v)`, `remove(t, k)` (для массива сдвигает), `keys(t)`, `values(t)`, `has(t, k)` |
 | функциональные | `sort(t, less?)` (устойчивая), `map(t, f)`, `filter(t, f)`, `reduce(t, f, init?)`, `each(t, f)` — если у `f` два параметра, второй получает ключ |
-| ошибки | `assert(c, msg?)`, `error(msg)`, `pcall(f, args…)` → `[ok, значение_или_сообщение]` |
+| ошибки | `assert(c, msg?)`, `panic(msg)`, `catch_panic(f, args…)` → `Result`; `parse_num(s)` → `Result`, `option(x)` → `Option`; `Some Ok Err None Error` |
 | система | `clock()`, `time()`, `exit(code?)`, `gc()` (возвращает освобождённые байты), `mem()`, `destroy(x)` |
 | `math` | `floor ceil round trunc abs sqrt sin cos tan asin acos atan atan2 exp ln log2 log10 pow min max sign random seed`, `pi e huge` |
 | `string` | `len upper lower trim reverse sub find contains starts_with ends_with split join replace rep chars byte char format`; методы вызываются как `s:upper()` |
@@ -289,7 +339,7 @@ assert(cond, "message");   error("boom");
 ```
  исходник ──► lexer ──► parser ──► analyzer ──► compiler ──► peephole ──► VM
               Vec<Token>  thin AST   слоты, upvalue,  байткод      суперинструкции   NaN-boxing,
-              (8 байт)    + Sym      const, break     (enum, 8 б)                    GC, замыкания
+              (8 байт)    + Sym      const, break     (слова по 4 б)                    GC, замыкания
 ```
 
 | модуль | суть |
@@ -343,7 +393,7 @@ compile + peephole 190 мс).
 ## Ограничения
 
 * `Vm::eval` не реентерабелен. Нет проверки полноты `match` на этапе компиляции (только ошибка во время выполнения), нет вложенных образцов для таблиц/массивов.
-* Нет `try/catch`-синтаксиса (используйте `pcall`), нет строковой интерполяции, нет вариативных параметров у пользовательских функций.
+* Нет `try/catch` (ошибки — `Result` и `?`, паники нельзя обработать, кроме `catch_panic` на границе), нет строковой интерполяции, нет вариативных параметров у пользовательских функций.
 * Строки неизменяемы, индексирование O(1) только для ASCII.
-* Однопоточная VM, GC останавливает мир. Глубина рекурсии — до 400 тыс. кадров (дальше обычная ошибка `stack overflow`, её можно перехватить `pcall`).
+* Однопоточная VM, GC останавливает мир. Глубина рекурсии — до 400 тыс. кадров (дальше паника `stack overflow`).
 * Ctrl-C завершает процесс, в том числе REPL.

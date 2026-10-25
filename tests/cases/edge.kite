@@ -9,7 +9,7 @@ print(cyc);
 
 struct Bad { x }
 impl Bad { fn str(self) { 42 } }
-print(pcall(print, Bad(1))[1]);
+print(catch_panic(print, Bad(1)):unwrap_err().message);
 
 const arr = [1, 2, 3];
 for i, v in arr { if i == 0 { remove(arr, 0); } }
@@ -43,18 +43,18 @@ print(mix["1"], mix[1]);
 
 // chained comparisons of different types are false, not errors (==) / errors (<)
 print(1 == "1", nil == 0);
-print(pcall(|| => 1 < "a")[1]);
-print(pcall(|| => nil + 1)[1]);
-print(pcall(|| => [] + [])[1]);
-print(pcall(|| => undefined_fn())[1]);
-print(pcall(|| => (5)(1))[1]);
-print(pcall(|| => "abc".x)[1]);
-print(pcall(|| => nil.x)[1]);
-print(pcall(|| => nil[0])[1]);
-print(pcall(|| => len(5))[1]);
-print(pcall(|| => push(5, 1))[1]);
-print(pcall(|| => for i in 5 { })[1]);
-print(pcall(|| => for i in "a".."b" { })[1]);
+print(catch_panic(|| => 1 < "a"):unwrap_err().message);
+print(catch_panic(|| => nil + 1):unwrap_err().message);
+print(catch_panic(|| => [] + []):unwrap_err().message);
+print(catch_panic(|| => undefined_fn()):unwrap_err().message);
+print(catch_panic(|| => (5)(1)):unwrap_err().message);
+print(catch_panic(|| => "abc".x):unwrap_err().message);
+print(catch_panic(|| => nil.x):unwrap_err().message);
+print(catch_panic(|| => nil[0]):unwrap_err().message);
+print(catch_panic(|| => len(5)):unwrap_err().message);
+print(catch_panic(|| => push(5, 1)):unwrap_err().message);
+print(catch_panic(|| => for i in 5 { }):unwrap_err().message);
+print(catch_panic(|| => for i in "a".."b" { }):unwrap_err().message);
 
 // expect: true 22
 // expect: {name: "loop", self: {name: "loop", self: {name: "loop", self: {name: "loop", self: {name: "loop", self: {name: "loop", self: {name: "loop", self: {...}}}}}}}}

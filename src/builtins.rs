@@ -29,8 +29,10 @@ pub fn install(vm: &mut Vm) {
     vm.define_native("values", 1, values);
     vm.define_native("has", 2, has);
     vm.define_native("assert", -1, assert);
-    vm.define_native("error", 1, error);
-    vm.define_native("pcall", -1, pcall);
+    vm.define_native("panic", 1, panic);
+    vm.define_native("catch_panic", -1, catch_panic);
+    vm.define_native("parse_num", 1, parse_num);
+    vm.define_native("option", 1, option);
     vm.define_native("clock", 0, clock);
     vm.define_native("time", 0, time);
     vm.define_native("exit", -1, exit);
@@ -393,30 +395,47 @@ fn assert(vm: &mut Vm, a: &[Value]) -> R {
     Ok(a[0])
 }
 
-fn error(vm: &mut Vm, a: &[Value]) -> R {
+/// `panic(message)`: a bug or an impossible situation.  Unwinds the whole program (see `catch_panic`).
+fn panic(vm: &mut Vm, a: &[Value]) -> R {
     let msg = vm.display(a[0])?;
     Err(rt_err(msg))
 }
 
-/// `pcall(f, args…)` -> `[true, result]` or `[false, message]`.
-fn pcall(vm: &mut Vm, a: &[Value]) -> R {
+/// `catch_panic(f, args…)` -> `Ok(result)` or `Err(Error(message, "panic"))`.
+/// A last resort for program boundaries (tests, REPL, plugins); expected failures are `Result`s.
+fn catch_panic(vm: &mut Vm, a: &[Value]) -> R {
     if a.is_empty() {
-        return Err(rt_err("pcall: missing function"));
+        return Err(rt_err("catch_panic: missing function"));
     }
-    let r = vm.call_protected(a[0], &a[1..]);
-    let mut out = vm.new_table();
-    match r {
-        Ok(v) => {
-            tpush(vm, &mut out, Value::TRUE);
-            tpush(vm, &mut out, v);
-        }
+    Ok(match vm.call_protected(a[0], &a[1..]) {
+        Ok(v) => vm.make_ok(v),
         Err(e) => {
-            let m = vm.new_string(e.msg);
-            tpush(vm, &mut out, Value::FALSE);
-            tpush(vm, &mut out, m);
+            let err = vm.make_error(&e.msg, "panic");
+            vm.make_err(err)
         }
+    })
+}
+
+/// `parse_num(s)` -> `Ok(number)` or `Err(Error)`.
+fn parse_num(vm: &mut Vm, a: &[Value]) -> R {
+    let Some(s) = a[0].as_str() else {
+        let shown = vm.repr(a[0])?;
+        let err = vm.make_error(&format!("parse_num expects a string, got {}", shown), "type");
+        return Ok(vm.make_err(err));
+    };
+    let text = s.as_str().to_string();
+    let parsed = to_num(vm, &[a[0]])?;
+    if parsed.is_num() {
+        Ok(vm.make_ok(parsed))
+    } else {
+        let err = vm.make_error(&format!("invalid number {:?}", text), "parse");
+        Ok(vm.make_err(err))
     }
-    Ok(Value::from(out))
+}
+
+/// `option(x)` -> `None` for `nil`, otherwise `Some(x)`.
+fn option(vm: &mut Vm, a: &[Value]) -> R {
+    Ok(if a[0].is_nil() { vm.make_none() } else { vm.make_some(a[0]) })
 }
 
 fn clock(_: &mut Vm, _: &[Value]) -> R {

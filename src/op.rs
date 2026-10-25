@@ -238,6 +238,10 @@ pub enum Op {
     /// No arm matched the value in local `slot`: raise an error (pushes, for the stack model).
     MatchFail(u16),
 
+    /// `[v] -> [payload]` for `Ok(payload)` / `Some(payload)`; for `Err(..)` / `None` the current
+    /// function returns `v` instead.  Anything else is an error.
+    Try,
+
     // ---- modules ----
     /// Load (or fetch from the cache) the module whose path is `consts[k]`; pushes its exports table.
     Import(U24),
@@ -276,7 +280,7 @@ impl Op {
             SetLocal(_) | SetUpval(_) | SetGlobal(_) | CloseUpvals(_) | Neg | Not | BitNot | AddK(_) | SubK(_)
             | MulK(_) | DivK(_) | RemK(_) | AddLocalK(..) | Jump(_) | GetField(_) | ForPrep(_) | ForLoop(_)
             | IterNext1(_) | IterNext2(_) | ReturnNil | ReturnLocal(_) | GetExport(_) | IsVariant(..) | Unpack(_)
-            | JNotEqLL(..) | JNotNeLL(..) | JNotLtLL(..) | JNotLeLL(..) | JNotGtLL(..) | JNotGeLL(..)
+            | Try | JNotEqLL(..) | JNotNeLL(..) | JNotLtLL(..) | JNotLeLL(..) | JNotGtLL(..) | JNotGeLL(..)
             | JNotEqLK(..) | JNotNeLK(..) | JNotLtLK(..) | JNotLeLK(..) | JNotGtLK(..) | JNotGeLK(..) | Ext(_) => 0,
             Add | Sub | Mul | Div | Rem | Pow | BitAnd | BitOr | BitXor | Shl | Shr | Eq | Ne | Lt | Le | Gt | Ge
             | JumpIfFalse(_) | JumpIfTrue(_) | And(_) | Or(_) => -1,

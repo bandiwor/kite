@@ -1,0 +1,79 @@
+// Option and Result are ordinary unions that are always available
+print(Some(1), None, Ok(2), Err("e"), Err(Error("bad")));   // expect: Some(1) None Ok(2) Err("e") Err(bad)
+print(type(Some(1)), type(None), type(Ok(1)), type(Option), type(Result), type(Error("x")));   // expect: Option Option Result union union Error
+print(Option.Some == Some, Option.None == None, Result.Ok == Ok, Result.Err == Err);   // expect: true true true true
+
+// they can be matched like any union (qualified or not)
+fn describe(o) {
+    match o {
+        Some(0) => "zero",
+        Some(n) if n > 10 => "big",
+        Some(n) => "some " + n,
+        None => "nothing",
+    }
+}
+print(describe(Some(0)), describe(Some(50)), describe(Some(3)), describe(None));   // expect: zero big some 3 nothing
+print(match Ok(5) { Result.Ok(v) => v, Result.Err(_) => -1 }, match Err("x") { Ok(v) => v, Err(e) => "E:" + e });   // expect: 5 E:x
+
+// structural equality
+print(Some(1) == Some(1), Some(1) == Some(2), Some(1) == None, None == None, Some(1) == 1, 1 == Some(1));   // expect: true false false true false false
+print(Ok(1) == Ok(1), Ok(1) == Err(1), Err("a") == Err("a"), Ok(Some(1)) == Ok(Some(1)));   // expect: true false true true
+print(Some(1) != Some(2), Ok(1) != Ok(1));   // expect: true false
+
+// Option methods
+print(Some(1):is_some(), Some(1):is_none(), None:is_some(), None:is_none());   // expect: true false false true
+print(Some(4):unwrap(), Some(4):expect("no"), None:unwrap_or(9), Some(4):unwrap_or(9));   // expect: 4 4 9 4
+print(None:unwrap_or_else(|| => "lazy"), Some(1):unwrap_or_else(|| => panic("never")));   // expect: lazy 1
+print(Some(3):map(|x| => x * 2), None:map(|x| => x * 2));   // expect: Some(6) None
+print(Some(3):and_then(|x| => if x > 2 { Some(x) } else { None }), Some(1):and_then(|x| => if x > 2 { Some(x) } else { None }), None:and_then(|x| => Some(x)));   // expect: Some(3) None None
+print(None:or_else(|| => Some(0)), Some(1):or_else(|| => Some(0)));   // expect: Some(0) Some(1)
+print(Some(5):filter(|x| => x > 3), Some(2):filter(|x| => x > 3), None:filter(|x| => true));   // expect: Some(5) None None
+print(Some(1):ok_or("missing"), None:ok_or("missing"));   // expect: Ok(1) Err("missing")
+
+// Result methods
+print(Ok(1):is_ok(), Ok(1):is_err(), Err(1):is_ok(), Err(1):is_err());   // expect: true false false true
+print(Ok(4):unwrap(), Ok(4):expect("no"), Err("e"):unwrap_err(), Err("e"):unwrap_or(7), Ok(4):unwrap_or(7));   // expect: 4 4 e 7 4
+print(Err("e"):unwrap_or_else(|e| => e + "!"), Ok(1):unwrap_or_else(|e| => panic("never")));   // expect: e! 1
+print(Ok(3):map(|x| => x + 1), Err("e"):map(|x| => x + 1));   // expect: Ok(4) Err("e")
+print(Ok(3):map_err(|e| => e + "!"), Err("e"):map_err(|e| => e + "!"));   // expect: Ok(3) Err("e!")
+print(Ok(3):and_then(|x| => Err("no")), Ok(3):and_then(|x| => Ok(x * 2)), Err("e"):and_then(|x| => Ok(x)));   // expect: Err("no") Ok(6) Err("e")
+print(Err("e"):or_else(|e| => Ok(e + "?")), Ok(1):or_else(|e| => Ok(0)));   // expect: Ok("e?") Ok(1)
+print(Ok(1):ok(), Err("e"):ok(), Ok(1):err(), Err("e"):err());   // expect: Some(1) None None Some("e")
+
+// unwrapping the wrong variant is a panic with a readable message
+print(catch_panic(|| => None:unwrap()));   // expect: Err(called `unwrap` on a `None` value)
+print(catch_panic(|| => None:expect("need a value")));   // expect: Err(need a value)
+print(catch_panic(|| => Err("boom"):unwrap()));   // expect: Err(called `unwrap` on an `Err` value: boom)
+print(catch_panic(|| => Err("boom"):expect("loading")));   // expect: Err(loading: boom)
+print(catch_panic(|| => Ok(1):unwrap_err()));   // expect: Err(called `unwrap_err` on an `Ok` value: 1)
+
+// Error
+const e = Error("file missing");
+print(e, e.message, e.kind, type(e));   // expect: file missing file missing error Error
+const k = Error("bad digit"):with_kind("parse");
+print(k.kind, k, "failed: " + k);   // expect: parse bad digit failed: bad digit
+print(Error(42).message, Error(nil).message);   // expect: 42 nil
+
+// helpers that produce them
+print(parse_num("42"), parse_num(" 3.5 "), parse_num("0x10"), parse_num("abc"), parse_num(""));   // expect: Ok(42) Ok(3.5) Ok(16) Err(invalid number "abc") Err(invalid number "")
+print(parse_num("abc"):unwrap_err().kind, parse_num(5):unwrap_err().kind);   // expect: parse type
+print(option(nil), option(0), option(false), option("x"));   // expect: None Some(0) Some(false) Some("x")
+print(option({ a: 1 }.a), option({ a: 1 }.b));   // expect: Some(1) None
+
+// they work with the rest of the language: tables, closures, loops
+const results = [Ok(1), Err("a"), Ok(3), Err("b")];
+var oks = 0;
+var errs = "";
+for r in results {
+    match r { Ok(n) => oks += n, Err(m) => errs = errs + m }
+}
+print(oks, errs);   // expect: 4 ab
+print(map([1, 2, 3], Some), filter(map([1, 2, 3], |x| => if x == 2 { None } else { Some(x) }), |o| => o:is_some()));   // expect: [Some(1), Some(2), Some(3)] [Some(1), Some(3)]
+const counter = { hits: None };
+counter.hits = Some(1);
+print(counter, counter.hits:unwrap());   // expect: {hits: Some(1)} 1
+
+// user types can be used as the payload / user unions can have their own None
+union Tree { Leaf, Node(l, r) }
+print(Some(Tree.Leaf), Ok(Tree.Node(Tree.Leaf, Tree.Leaf)));   // expect: Some(Leaf) Ok(Node(Leaf, Leaf))
+print(match Tree.Leaf { None => "any union's None", _ => "other" });   // expect: other

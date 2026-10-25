@@ -147,6 +147,10 @@ pub struct Vm {
     pub out: Box<dyn Write>,
     /// The `string` library table, used for `"text":method()` calls.
     pub string_lib: Value,
+    /// The prelude's `Option`, `Result` and `Error` types (`NIL` while the prelude loads).
+    pub option_ty: Value,
+    pub result_ty: Value,
+    pub error_ty: Value,
     pub rng_state: u64,
     /// Loaded modules by canonical path.
     modules: FxHashMap<String, ModuleState>,
@@ -188,6 +192,9 @@ impl Vm {
             opts: Options::default(),
             out: Box::new(std::io::BufWriter::new(std::io::stdout())),
             string_lib: Value::NIL,
+            option_ty: Value::NIL,
+            result_ty: Value::NIL,
+            error_ty: Value::NIL,
             rng_state: 0x9E37_79B9_7F4A_7C15,
             modules: FxHashMap::default(),
             stack,
@@ -200,6 +207,7 @@ impl Vm {
             nest: 0,
         };
         crate::builtins::install(&mut vm);
+        crate::prelude::install(&mut vm);
         vm
     }
 
@@ -323,7 +331,11 @@ impl Vm {
         Ok((proto, source))
     }
 
-    fn to_kite_error(&self, e: RtError, fallback: &Rc<SourceFile>) -> KiteError {
+    fn to_kite_error(&self, mut e: RtError, fallback: &Rc<SourceFile>) -> KiteError {
+        // frames of the prelude are an implementation detail: report the caller's line instead
+        if e.trace.iter().any(|t| t.source.name != "<prelude>") {
+            e.trace.retain(|t| t.source.name != "<prelude>");
+        }
         let (source, offset) = match e.trace.first() {
             Some(t) => (t.source.clone(), t.offset),
             None => (fallback.clone(), 0),
@@ -609,6 +621,61 @@ impl Vm {
             self.nest = nest;
         }
         r
+    }
+
+    // ---- Option / Result / Error -----------------------------------------------------------
+
+    /// For `?`: `Some(Some(payload))` for `Ok`/`Some`, `Some(None)` for `Err`/`None`
+    /// (the value is returned as it is), `None` if `v` is neither an Option nor a Result.
+    fn split_try(&self, v: Value) -> Option<Option<Value>> {
+        let inst = v.as_gc::<Instance>()?;
+        let ty = Value::from(inst.ty);
+        // Option { None, Some } and Result { Ok, Err }: the payload variant is tag 1 for
+        // Option and tag 0 for Result
+        let success_tag = if ty == self.option_ty {
+            1
+        } else if ty == self.result_ty {
+            0
+        } else {
+            return None;
+        };
+        Some((inst.tag == success_tag).then(|| inst.fields[0]))
+    }
+
+    fn payload_variant(&mut self, ty: Value, tag: u16, payload: Value) -> Value {
+        let ty = ty.as_gc::<StructType>().expect("prelude types are installed");
+        let inst = self.heap.alloc(Instance {
+            hdr: Header::new(Kind::Instance),
+            ty,
+            fields: Box::new([payload]),
+            tag,
+            finalized: false,
+        });
+        Value::from(inst)
+    }
+
+    pub fn make_some(&mut self, v: Value) -> Value {
+        self.payload_variant(self.option_ty, 1, v)
+    }
+
+    pub fn make_none(&self) -> Value {
+        self.option_ty.as_gc::<StructType>().expect("prelude types are installed").variants[0].value
+    }
+
+    pub fn make_ok(&mut self, v: Value) -> Value {
+        self.payload_variant(self.result_ty, 0, v)
+    }
+
+    pub fn make_err(&mut self, v: Value) -> Value {
+        self.payload_variant(self.result_ty, 1, v)
+    }
+
+    /// `Error { message, kind }`.
+    pub fn make_error(&mut self, message: &str, kind: &str) -> Value {
+        let ty = self.error_ty.as_gc::<StructType>().expect("prelude types are installed");
+        let fields = vec![self.new_string(message), self.new_string(kind)].into_boxed_slice();
+        let inst = self.heap.alloc(Instance { hdr: Header::new(Kind::Instance), ty, fields, tag: 0, finalized: false });
+        Value::from(inst)
     }
 
     // ---- unions & patterns ---------------------------------------------------------------
@@ -1233,6 +1300,9 @@ impl Vm {
                 heap.mark_value(v);
             }
             heap.mark_value(self.string_lib);
+            heap.mark_value(self.option_ty);
+            heap.mark_value(self.result_ty);
+            heap.mark_value(self.error_ty);
             for m in self.modules.values() {
                 if let ModuleState::Done(v) = m {
                     heap.mark_value(*v);
@@ -2062,6 +2132,15 @@ impl Vm {
                         let v = *base.add(s as usize);
                         let shown = protect!(self.repr(v));
                         throw!("no match arm matched the value {}", shown);
+                    }
+
+                    Op::Try => {
+                        let v = top!();
+                        match self.split_try(v) {
+                            Some(Some(payload)) => *sp.sub(1) = payload,
+                            Some(None) => do_return!(v),
+                            None => throw!("`?` expects an Option or a Result, got {}", self.type_of(v)),
+                        }
                     }
 
                     // ---- modules

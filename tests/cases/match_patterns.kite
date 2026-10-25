@@ -137,7 +137,7 @@ fn from_array(a, i) { if i == len(a) { List.Nil } else { List.Cons(a[i], from_ar
 print(sum(from_array([1, 2, 3, 4], 0)));   // expect: 10
 
 // not matching anything is a runtime error that names the value
-print(pcall(|| => match Expr.Num(1) { Add(_, _) => 1 })[1]);   // expect: no match arm matched the value Num(1)
-print(pcall(|| => match 3 { 1 => "a", 2 => "b" })[1]);   // expect: no match arm matched the value 3
-print(pcall(|| => match Expr.Add(1, 2) { Add(a) => a })[1]);   // expect: pattern 'Add' has 1 field but the value has 2
-print(pcall(|| => match 1 { A.X(_) => 1 })[1]);   // expect: no match arm matched the value 1
+print(catch_panic(|| => match Expr.Num(1) { Add(_, _) => 1 }):unwrap_err().message);   // expect: no match arm matched the value Num(1)
+print(catch_panic(|| => match 3 { 1 => "a", 2 => "b" }):unwrap_err().message);   // expect: no match arm matched the value 3
+print(catch_panic(|| => match Expr.Add(1, 2) { Add(a) => a }):unwrap_err().message);   // expect: pattern 'Add' has 1 field but the value has 2
+print(catch_panic(|| => match 1 { A.X(_) => 1 }):unwrap_err().message);   // expect: no match arm matched the value 1

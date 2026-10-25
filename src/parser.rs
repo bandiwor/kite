@@ -78,7 +78,7 @@ fn infix_bp(k: TokenKind) -> Option<(u8, u8)> {
         T::Plus | T::Minus => (100, 101),
         T::Star | T::Slash | T::Percent => (110, 111),
         T::StarStar => (130, 130),
-        T::LParen | T::LBracket | T::Dot | T::Colon => (BP_POSTFIX, BP_POSTFIX),
+        T::LParen | T::LBracket | T::Dot | T::Colon | T::Question => (BP_POSTFIX, BP_POSTFIX),
         _ => return None,
     })
 }
@@ -818,6 +818,10 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     let name = self.expect_ident("after `.`")?;
                     lhs = self.ast.push(Node::Field { obj: lhs, name }, pos);
+                }
+                T::Question => {
+                    self.pos += 1;
+                    lhs = self.ast.push(Node::Try(lhs), pos);
                 }
                 T::Colon => {
                     // method call sugar `recv:name(args)`

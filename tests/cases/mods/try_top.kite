@@ -1,0 +1,2 @@
+export fn ok() { 1 }
+const r = Ok(1)?;

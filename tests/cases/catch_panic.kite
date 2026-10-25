@@ -1,0 +1,41 @@
+// runtime errors are panics: they unwind the whole program, but `catch_panic` can stop one at a boundary.
+// The VM stays consistent afterwards.
+const r1 = catch_panic(|| => 1 + nil);
+print(r1:is_err(), r1:unwrap_err().message, r1:unwrap_err().kind);   // expect: true invalid operands for '+': number and nil panic
+const r2 = catch_panic(|a, b| => a + b, 2, 3);
+print(r2, r2:unwrap());   // expect: Ok(5) 5
+print(catch_panic(panic, "boom"));   // expect: Err(boom)
+
+// an upvalue captured by a frame that is unwound by a panic stays valid
+var leaked = nil;
+fn thrower() {
+    var local = 41;
+    leaked = || => { local += 1; local };
+    panic("fail");
+}
+print(catch_panic(thrower):is_err());   // expect: true
+print(leaked(), leaked());   // expect: 42 43
+
+// stack overflow is a panic like any other
+fn deep(n) { 1 + deep(n + 1) }
+const so = catch_panic(deep, 0);
+print(so:is_err(), so:unwrap_err().message);   // expect: true stack overflow
+fn depth(n) { if n == 0 { 0 } else { 1 + depth(n - 1) } }
+print(depth(10000));   // expect: 10000
+
+// nested catch_panics and panics raised in callbacks
+const nested = catch_panic(|| => map([1, 2, 3], |x| => if x == 2 { panic("in map") } else { x }));
+print(nested);   // expect: Err(in map)
+print(catch_panic(|| => catch_panic(|| => panic("inner")):unwrap_err().message));   // expect: Ok("inner")
+
+// assert is a panic too
+print(catch_panic(assert, false, "assertion message"));   // expect: Err(assertion message)
+print(catch_panic(assert, 1 == 1):is_ok());   // expect: true
+
+// the panic message of a failed unwrap points at the caller, not at the prelude
+print(catch_panic(|| => None:unwrap()));   // expect: Err(called `unwrap` on a `None` value)
+
+// after all of that the machine still works
+var s = 0;
+for i in 0..100 { s += i; }
+print(s);   // expect: 4950

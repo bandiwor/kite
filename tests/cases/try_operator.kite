@@ -1,0 +1,111 @@
+// `expr?` unwraps Ok / Some, and returns Err / None from the current function
+fn div(a, b) { if b == 0 { Err(Error("division by zero"):with_kind("math")) } else { Ok(a / b) } }
+
+fn calc(a, b, c) {
+    const x = div(a, b)?;
+    const y = div(x, c)?;
+    Ok(x + y)
+}
+print(calc(8, 2, 2), calc(1, 0, 1), calc(1, 1, 0));   // expect: Ok(6) Err(division by zero) Err(division by zero)
+print(calc(1, 0, 1):unwrap_err().kind);   // expect: math
+
+// the early return really happens: nothing after the failing `?` runs
+var log = [];
+fn steps(fail_at) {
+    push(log, "start");
+    const a = (if fail_at == 1 { Err("e1") } else { Ok(1) })?;
+    push(log, "after 1");
+    const b = (if fail_at == 2 { Err("e2") } else { Ok(2) })?;
+    push(log, "after 2");
+    Ok(a + b)
+}
+print(steps(0), len(log));   // expect: Ok(3) 3
+log = [];
+print(steps(1), len(log));   // expect: Err("e1") 1
+log = [];
+print(steps(2), len(log));   // expect: Err("e2") 2
+
+// Option
+fn first(t) { option(t[0]) }
+fn first_doubled(t) { const v = first(t)?; Some(v * 2) }
+print(first_doubled([21]), first_doubled([]));   // expect: Some(42) None
+
+// anywhere inside an expression
+fn sum3(a, b, c) { Ok(a? + b? + c?) }
+print(sum3(Ok(1), Ok(2), Ok(3)), sum3(Ok(1), Err("two"), Err("three")));   // expect: Ok(6) Err("two")
+fn call(f, x) { Ok(f(x?)) }
+print(call(|v| => v + 1, Ok(1)), call(|v| => v + 1, Err("no")));   // expect: Ok(2) Err("no")
+fn field(r) { Ok(r?.name) }
+print(field(Ok({ name: "kite" })), field(Err(0)));   // expect: Ok("kite") Err(0)
+fn nested(r) { Ok(r?? + 1) }
+print(nested(Ok(Ok(1))), nested(Ok(Err("inner"))), nested(Err("outer")));   // expect: Ok(2) Err("inner") Err("outer")
+fn chain(r) { Ok(r:map(|x| => x + 1)? * 10) }
+print(chain(Ok(1)), chain(Err("e")));   // expect: Ok(20) Err("e")
+
+// `?` returns from the innermost function only: lambdas are their own functions
+fn parse_all(items) {
+    const parsed = map(items, |s| => { const n = parse_num(s)?; Ok(n * 2) });
+    Ok(parsed)
+}
+print(parse_all(["1", "x"]));   // expect: Ok([Ok(2), Err(invalid number "x")])
+
+// from inside loops, blocks, matches and ifs; the loop state is cleaned up
+fn find_first_bad(items) {
+    var count = 0;
+    for s in items {
+        const n = parse_num(s)?;
+        count += n;
+    }
+    for i in 0..3 { if i == 2 { Err("loop " + i)?; } }
+    Ok(count)
+}
+print(find_first_bad(["1", "2"]), find_first_bad(["1", "z"]));   // expect: Err("loop 2") Err(invalid number "z")
+fn in_match(v) {
+    const r = match v { 0 => Ok(0), 1 => Err("one"), _ => Ok(v) };
+    const x = { const t = r?; t + 100 };
+    Ok(if x > 150 { Ok(x)? } else { x })
+}
+print(in_match(0), in_match(1), in_match(60), in_match(10));   // expect: Ok(100) Err("one") Ok(160) Ok(110)
+
+// captured locals are closed properly when `?` leaves the function
+var saved = nil;
+fn capture(r) {
+    var counter = 10;
+    saved = || => { counter += 1; counter };
+    r?;
+    Ok(counter)
+}
+print(capture(Err("x")), saved(), saved());   // expect: Err("x") 11 12
+print(capture(Ok(1)), saved());   // expect: Ok(10) 11
+
+// methods, hooks and tail positions
+struct Parser { pos }
+impl Parser {
+    fn next(self, t) {
+        const v = option(t[self.pos])?;
+        self.pos += 1;
+        Some(v)
+    }
+    fn two(self, t) { const a = self:next(t)?; const b = self:next(t)?; Some(a + b) }
+}
+const p = Parser(0);
+print(p:two([1, 2, 3]), p:two([1, 2, 3]), p.pos);   // expect: Some(3) None 3
+fn tail(r) { r? }
+print(tail(Ok(1)), tail(Err("e")), tail(Some(2)), tail(None));   // expect: 1 Err("e") 2 None
+
+// an Option function may pass on an Err and vice versa: `?` returns the value as it is
+fn mixed(o) { const v = o?; Some(v) }
+print(mixed(Err("e")), mixed(Ok(3)));   // expect: Err("e") Some(3)
+
+// anything else is a panic
+print(catch_panic(|| => 5?));   // expect: Err(`?` expects an Option or a Result, got number)
+print(catch_panic(|| => nil?));   // expect: Err(`?` expects an Option or a Result, got nil)
+print(catch_panic(|| => Error("e")?));   // expect: Err(`?` expects an Option or a Result, got Error)
+
+// GC safety: many allocations between a `?` and its use
+fn heavy(n) {
+    var acc = [];
+    for i in 0..n { const v = Ok([i, i + 1])?; push(acc, v); }
+    Ok(len(acc))
+}
+print(heavy(500));   // expect: Ok(500)
