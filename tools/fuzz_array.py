@@ -83,15 +83,15 @@ def make(seed):
             i, v = r.randint(0, len(a) + 1), items()
             if i <= len(a):
                 a.insert(i, v)
-                emit(f"insert({n}, {i}, {kv(v)});", None)
+                emit(f"{n}:insert({i}, {kv(v)});", None)
             else:
-                emit(f"print(catch_panic(|| => insert({n}, {i}, {kv(v)})):is_err());", "true")
+                emit(f"print(catch_panic(|| => {n}:insert({i}, {kv(v)})):is_err());", "true")
         elif op == "remove":
             i = r.randint(0, len(a) + 1)
             if i < len(a):
-                emit(f"print(remove({n}, {i}));", show(a.pop(i)))
+                emit(f"print({n}:remove({i}));", show(a.pop(i)))
             else:
-                emit(f"print(catch_panic(|| => remove({n}, {i})):is_err());", "true")
+                emit(f"print(catch_panic(|| => {n}:remove({i})):is_err());", "true")
         elif op == "slice":
             i, j = r.randint(-6, 6), r.randint(-6, 6)
             lo, hi = clamp(i, len(a)), clamp(j, len(a))
@@ -116,23 +116,23 @@ def make(seed):
             out = f"Some({a.index(v)})" if v in a else "None"
             emit(f"print({n}:index_of({kv(v)}));", out)
         elif op == "len":
-            emit(f"print(len({n}));", str(len(a)))
+            emit(f"print({n}:len());", str(len(a)))
         elif op == "iter":
             emit(f"do {{ var s = \"\"; for i, v in {n} {{ s = s + i + \":\" + v + \" \"; }} print(s); }}",
                  "".join(f"{i}:{show(v)} " for i, v in enumerate(a)))
         elif op == "show":
-            emit(f"print({n}, len({n}));", f"{show(a)} {len(a)}")
+            emit(f"print({n}, {n}:len());", f"{show(a)} {len(a)}")
         elif op == "map":
             k = nums()
-            emit(f"print(map({n}, |x, i| => if x == nil {{ i }} else {{ x + {k} }}));",
+            emit(f"print({n}:map(|x, i| => if x == nil {{ i }} else {{ x + {k} }}));",
                  show([i if x is None else x + k for i, x in enumerate(a)]))
         elif op == "filter":
-            emit(f"print(filter({n}, |x| => x != nil && x > 0));", show([x for x in a if x is not None and x > 0]))
+            emit(f"print({n}:filter(|x| => x != nil && x > 0));", show([x for x in a if x is not None and x > 0]))
         elif op == "getopt":
             i = r.randint(-1, len(a) + 1)
             ok = 0 <= i < len(a)
             emit(f"print({n}:get({kv(i)}));", f"Some({show(a[i])})" if ok else "None")
-    emit("print(" + ", ".join(f"len({k})" for k in arrs) + ");" if arrs else "print();",
+    emit("print(" + ", ".join(f"{k}:len()" for k in arrs) + ");" if arrs else "print();",
          ", ".join(str(len(v)) for v in arrs.values()).replace(", ", " ") if arrs else "")
     lines = [s for s, w in zip(src, want)]
     expected = [w for w in want if w is not None]

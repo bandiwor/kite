@@ -1,0 +1,4 @@
+import "std/math";
+import { join } from "std/fs";
+export fn hyp(a, b) { math.sqrt(a * a + b * b) }
+export fn path(a, b) { join(a, b) }

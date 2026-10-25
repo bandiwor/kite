@@ -5,9 +5,9 @@ a += 5; a -= 1; a *= 2; a /= 4; a %= 2;
 print(a);   // expect: 1
 var total = 0;
 const add = |v| => total += v;
-each([1, 2, 3], add);
+[1, 2, 3]:each(add);
 print(total);   // expect: 6
-each([4, 5], |v| => total = total + v);
+[4, 5]:each(|v| => total = total + v);
 print(total);   // expect: 15
 fn bump() { total += 1 }
 print(bump());   // expect: 16

@@ -5,7 +5,7 @@
 //! `"permission"`, `"exists"`, `"utf8"` or `"io"`.  Passing something that is not a string as a
 //! path is a bug and panics.
 
-use crate::builtins::{apush, arg_str, lib};
+use crate::builtins::{apush, arg_str, std_module};
 use crate::value::Value;
 use crate::vm::{rt_err, RtResult, Vm};
 use std::io::{self, Write};
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 type R = RtResult<Value>;
 
 pub fn install(vm: &mut Vm) {
-    lib(
+    std_module(
         vm,
         "fs",
         &[

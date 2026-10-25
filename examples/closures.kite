@@ -2,9 +2,9 @@
 // fresh variable.
 const adders = [];
 for i in 1..4 {
-    push(adders, |x| => x + i);
+    adders:push(|x| => x + i);
 }
-print(map(adders, |f| => f(10)));
+print(adders:map(|f| => f(10)));
 
 fn make_account(balance) {
     const deposit = |n| => { balance += n; balance };

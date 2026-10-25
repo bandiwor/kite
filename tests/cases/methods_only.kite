@@ -1,0 +1,35 @@
+// functions that belong to a type are methods of that type, not globals
+print(catch_panic(|| => len([1])):unwrap_err().message);   // expect: undefined variable 'len'
+print(catch_panic(|| => push([1], 2)):unwrap_err().message);   // expect: undefined variable 'push'
+print(catch_panic(|| => keys({})):unwrap_err().message);   // expect: undefined variable 'keys'
+print(catch_panic(|| => map([1], |x| => x)):unwrap_err().message);   // expect: undefined variable 'map'
+print(catch_panic(|| => sort([2, 1])):unwrap_err().message);   // expect: undefined variable 'sort'
+print(catch_panic(|| => parse_num("1")):unwrap_err().message);   // expect: undefined variable 'parse_num'
+
+// the same functions through the type's namespace: `array.push(a, x)` is `a:push(x)`
+const a = [3, 1, 2];
+array.push(a, 4);
+print(a:len(), array.len(a), array.sort(a), array.map(a, |x| => x * 2));   // expect: 4 4 [1, 2, 3, 4] [2, 4, 6, 8]
+print("héllo":len(), string.len("abc"), string.upper("abc"), "12":parse_num(), string.parse_num("x"):is_err());   // expect: 5 3 ABC Ok(12) true
+
+// tables
+const t = { x: 1, y: 2 };
+print(t:len(), t:keys(), t:values(), t:has("x"), t:has("z"), t:remove("x"), t);   // expect: 2 ["x", "y"] [1, 2] true false 1 {y: 2}
+print(t:map(|v| => v * 10), t:filter(|v| => v > 5), t:reduce(|s, v| => s + v), table.len(t));   // expect: {y: 20} {} 2 1
+t:each(|v, k| => write(k, v, ";"));
+print();   // expect: y2;
+
+// a table's own function wins over the library method of the same name
+const odd = { keys: |self| => "mine", n: 1 };
+print(odd:keys(), table.keys(odd));   // expect: mine ["keys", "n"]
+print(catch_panic(|| => ({ }):nothing()):unwrap_err().message);   // expect: table has no function 'nothing'
+
+// structs: len, map and friends are ordinary methods defined with impl
+struct Bag { items }
+impl Bag {
+    fn len(self) { self.items:len() }
+    fn map(self, f) { Bag(self.items:map(f)) }
+}
+const bag = Bag([1, 2, 3]);
+print(bag:len(), bag:map(|x| => x + 1).items);   // expect: 3 [2, 3, 4]
+print(catch_panic(|| => 5:len()):unwrap_err().message);   // expect: cannot call method 'len' on number

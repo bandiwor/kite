@@ -31,7 +31,7 @@ struct W { items }
 impl W {
     fn new(self, n) {
         self.items = [];
-        for i in 0..n { push(self.items, || => i); }
+        for i in 0..n { self.items:push(|| => i); }
     }
 }
 const w = W(3);
@@ -42,7 +42,7 @@ const k1 = S(1);
 const k2 = S(1);
 const m = {};
 m[k1] = "one"; m[k2] = "two";
-print(m[k1], m[k2], len(m));   // expect: one two 2
+print(m[k1], m[k2], m:len());   // expect: one two 2
 
 // `eq` hook makes == structural but tables still key by identity
 struct P { x }

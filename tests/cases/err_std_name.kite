@@ -1,0 +1,2 @@
+// error: module has no export 'sqroot'
+import { sqroot } from "std/math";

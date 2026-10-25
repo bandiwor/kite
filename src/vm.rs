@@ -149,6 +149,8 @@ pub struct Vm {
     pub string_lib: Value,
     /// The `array` library table, used for `arr:method()` calls.
     pub array_lib: Value,
+    /// The `table` library table: `t:keys()` and friends (after the table's own fields).
+    pub table_lib: Value,
     /// The prelude's `Option`, `Result` and `Error` types (`NIL` while the prelude loads).
     pub option_ty: Value,
     pub result_ty: Value,
@@ -195,6 +197,7 @@ impl Vm {
             out: Box::new(std::io::BufWriter::new(std::io::stdout())),
             string_lib: Value::NIL,
             array_lib: Value::NIL,
+            table_lib: Value::NIL,
             option_ty: Value::NIL,
             result_ty: Value::NIL,
             error_ty: Value::NIL,
@@ -215,6 +218,11 @@ impl Vm {
     }
 
     // ---- embedding helpers ----------------------------------------------------------
+
+    /// Make `v` the module that `import "key"` returns (used for the `std/…` modules).
+    pub fn register_module(&mut self, key: &str, v: Value) {
+        self.modules.insert(key.to_string(), ModuleState::Done(v));
+    }
 
     pub fn define_global(&mut self, name: &str, v: Value) {
         let sym = self.interner.intern(name);
@@ -787,6 +795,17 @@ impl Vm {
     /// return its exports table.
     fn import_module(&mut self, spec: Value) -> RtResult<Value> {
         let spec = spec.as_str().map(|s| s.as_str().to_string()).unwrap_or_default();
+        if spec.starts_with("std/") {
+            return match self.modules.get(&spec) {
+                Some(ModuleState::Done(v)) => Ok(*v),
+                _ => {
+                    let mut known: Vec<&str> =
+                        self.modules.keys().filter(|k| k.starts_with("std/")).map(|k| k.as_str()).collect();
+                    known.sort();
+                    Err(rt_err(format!("unknown standard module '{}' (available: {})", spec, known.join(", "))))
+                }
+            };
+        }
         let base = self.import_base();
         let path = {
             let p = std::path::Path::new(&spec);
@@ -1125,10 +1144,16 @@ impl Vm {
             }
             Some(Kind::Table) => {
                 let v = unsafe { obj.as_gc_unchecked::<Table>() }.get_str(name);
-                if v.is_nil() {
-                    return Err(rt_err(format!("table has no function '{}'", name.as_str())));
+                if !v.is_nil() {
+                    return Ok(v);
                 }
-                Ok(v)
+                if let Some(lib) = self.table_lib.as_gc::<Table>() {
+                    let f = lib.get_str(name);
+                    if !f.is_nil() {
+                        return Ok(f);
+                    }
+                }
+                Err(rt_err(format!("table has no function '{}'", name.as_str())))
             }
             Some(Kind::Array) => {
                 if let Some(lib) = self.array_lib.as_gc::<Table>() {
@@ -1372,6 +1397,7 @@ impl Vm {
             }
             heap.mark_value(self.string_lib);
             heap.mark_value(self.array_lib);
+            heap.mark_value(self.table_lib);
             heap.mark_value(self.option_ty);
             heap.mark_value(self.result_ty);
             heap.mark_value(self.error_ty);

@@ -20,18 +20,9 @@ pub fn install(vm: &mut Vm) {
     vm.define_native("type", 1, type_of);
     vm.define_native("str", 1, to_str);
     vm.define_native("num", 1, to_num);
-    vm.define_native("len", 1, len);
-    vm.define_native("push", -1, push);
-    vm.define_native("pop", 1, pop);
-    vm.define_native("insert", 3, insert);
-    vm.define_native("remove", 2, remove);
-    vm.define_native("keys", 1, keys);
-    vm.define_native("values", 1, values);
-    vm.define_native("has", 2, has);
     vm.define_native("assert", -1, assert);
     vm.define_native("panic", 1, panic);
     vm.define_native("catch_panic", -1, catch_panic);
-    vm.define_native("parse_num", 1, parse_num);
     vm.define_native("option", 1, option);
     vm.define_native("clock", 0, clock);
     vm.define_native("time", 0, time);
@@ -40,12 +31,6 @@ pub fn install(vm: &mut Vm) {
     vm.define_native("gc", 0, gc);
     vm.define_native("mem", 0, mem);
     vm.define_native("destroy", 1, destroy);
-    // ---- functional helpers
-    vm.define_native("sort", -1, sort);
-    vm.define_native("map", 2, map);
-    vm.define_native("filter", 2, filter);
-    vm.define_native("reduce", -1, reduce);
-    vm.define_native("each", 2, each);
 
     crate::fslib::install(vm);
 
@@ -78,11 +63,30 @@ pub fn install(vm: &mut Vm) {
             ("each", 2, each),
             ("keys", 1, keys),
             ("values", 1, values),
+            ("has", 2, has),
         ],
     );
     vm.array_lib = Value::from(array);
 
-    let math = lib(
+    // methods of tables: `t:keys()`; a field of the same name wins (see `Vm::get_method`)
+    let table = lib(
+        vm,
+        "table",
+        &[
+            ("len", 1, len),
+            ("keys", 1, keys),
+            ("values", 1, values),
+            ("has", 2, has),
+            ("remove", 2, remove),
+            ("map", 2, map),
+            ("filter", 2, filter),
+            ("reduce", -1, reduce),
+            ("each", 2, each),
+        ],
+    );
+    vm.table_lib = Value::from(table);
+
+    let math = std_module(
         vm,
         "math",
         &[
@@ -189,6 +193,7 @@ pub fn install(vm: &mut Vm) {
                 }
             }),
             ("format", -1, format),
+            ("parse_num", 1, parse_num),
         ],
     );
     vm.string_lib = Value::from(string);
@@ -196,14 +201,27 @@ pub fn install(vm: &mut Vm) {
 
 // ---- registration helpers -----------------------------------------------------------------
 
-pub(crate) fn lib(vm: &mut Vm, name: &str, funcs: &[(&'static str, i8, NativeFn)]) -> Gc<Table> {
+fn native_table(vm: &mut Vm, funcs: &[(&'static str, i8, NativeFn)]) -> Gc<Table> {
     let mut t = vm.new_table();
     for &(fname, arity, f) in funcs {
         let n = vm.new_native(fname, arity, f);
         let key = vm.heap.intern(fname);
         let _ = t.set(Value::from(key), n);
     }
+    t
+}
+
+/// A table of natives bound to a global name: the method table of a type (`string`, `array`, `table`).
+pub(crate) fn lib(vm: &mut Vm, name: &str, funcs: &[(&'static str, i8, NativeFn)]) -> Gc<Table> {
+    let t = native_table(vm, funcs);
     vm.define_global(name, Value::from(t));
+    t
+}
+
+/// A built-in module: nothing is global, `import "std/<name>"` brings it in.
+pub(crate) fn std_module(vm: &mut Vm, name: &str, funcs: &[(&'static str, i8, NativeFn)]) -> Gc<Table> {
+    let t = native_table(vm, funcs);
+    vm.register_module(&format!("std/{}", name), Value::from(t));
     t
 }
 

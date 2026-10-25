@@ -55,8 +55,8 @@ print(k.kind, k, "failed: " + k);   // expect: parse bad digit failed: bad digit
 print(Error(42).message, Error(nil).message);   // expect: 42 nil
 
 // helpers that produce them
-print(parse_num("42"), parse_num(" 3.5 "), parse_num("0x10"), parse_num("abc"), parse_num(""));   // expect: Ok(42) Ok(3.5) Ok(16) Err(invalid number "abc") Err(invalid number "")
-print(parse_num("abc"):unwrap_err().kind, parse_num(5):unwrap_err().kind);   // expect: parse type
+print("42":parse_num(), " 3.5 ":parse_num(), "0x10":parse_num(), "abc":parse_num(), "":parse_num());   // expect: Ok(42) Ok(3.5) Ok(16) Err(invalid number "abc") Err(invalid number "")
+print("abc":parse_num():unwrap_err().kind, string.parse_num(5):unwrap_err().kind);   // expect: parse type
 print(option(nil), option(0), option(false), option("x"));   // expect: None Some(0) Some(false) Some("x")
 print(option({ a: 1 }.a), option({ a: 1 }.b));   // expect: Some(1) None
 
@@ -68,7 +68,7 @@ for r in results {
     match r { Ok(n) => oks += n, Err(m) => errs = errs + m }
 }
 print(oks, errs);   // expect: 4 ab
-print(map([1, 2, 3], Some), filter(map([1, 2, 3], |x| => if x == 2 { None } else { Some(x) }), |o| => o:is_some()));   // expect: [Some(1), Some(2), Some(3)] [Some(1), Some(3)]
+print([1, 2, 3]:map(Some), ([1, 2, 3]:map(|x| => if x == 2 { None } else { Some(x) })):filter(|o| => o:is_some()));   // expect: [Some(1), Some(2), Some(3)] [Some(1), Some(3)]
 const counter = { hits: None };
 counter.hits = Some(1);
 print(counter, counter.hits:unwrap());   // expect: {hits: Some(1)} 1

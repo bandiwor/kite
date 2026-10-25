@@ -58,34 +58,34 @@ print(ack(2, 3), ack(3, 3));   // expect: 9 61
 
 // permutations of 6 distinct items
 fn permutations(items) {
-    if len(items) <= 1 { return [items]; }
+    if items:len() <= 1 { return [items]; }
     const out = [];
-    for i in 0..len(items) {
+    for i in 0..items:len() {
         const rest = [];
-        for j in 0..len(items) { if j != i { push(rest, items[j]); } }
+        for j in 0..items:len() { if j != i { rest:push(items[j]); } }
         for p in permutations(rest) {
             const q = [items[i]];
-            for e in p { push(q, e); }
-            push(out, q);
+            for e in p { q:push(e); }
+            out:push(q);
         }
     }
     out
 }
 const perms = permutations([1, 2, 3, 4, 5, 6]);
-print(len(perms), perms[0], perms[719]);   // expect: 720 [1, 2, 3, 4, 5, 6] [6, 5, 4, 3, 2, 1]
+print(perms:len(), perms[0], perms[719]);   // expect: 720 [1, 2, 3, 4, 5, 6] [6, 5, 4, 3, 2, 1]
 
 // matrix multiplication
 fn matmul(a, b) {
-    const n = len(a);
+    const n = a:len();
     const c = [];
     for i in 0..n {
         const row = [];
         for j in 0..n {
             var s = 0;
             for k in 0..n { s += a[i][k] * b[k][j]; }
-            push(row, s);
+            row:push(s);
         }
-        push(c, row);
+        c:push(row);
     }
     c
 }
@@ -97,15 +97,15 @@ print(gcd(1071, 462), 1071 * 462 / gcd(1071, 462));   // expect: 21 23562
 var row = [1];
 for i in 0..10 {
     const next = [1];
-    for j in 1..len(row) { push(next, row[j - 1] + row[j]); }
-    push(next, 1);
+    for j in 1..row:len() { next:push(row[j - 1] + row[j]); }
+    next:push(1);
     row = next;
 }
 print(row);   // expect: [1, 10, 45, 120, 210, 252, 210, 120, 45, 10, 1]
-print(string.join(map(reduce("the quick brown fox":split(" "), |acc, w| => { insert(acc, 0, w); acc }, []), |w| => w), " "));   // expect: fox brown quick the
+print(string.join((("the quick brown fox":split(" ")):reduce(|acc, w| => { acc:insert(0, w); acc }, [])):map(|w| => w), " "));   // expect: fox brown quick the
 const data = [5, 2, 9, 1, 5, 6, 0, -3];
-for i in 0..len(data) {
-    for j in 0..len(data) - i - 1 {
+for i in 0..data:len() {
+    for j in 0..data:len() - i - 1 {
         if data[j] > data[j + 1] { const t = data[j]; data[j] = data[j + 1]; data[j + 1] = t; }
     }
 }
@@ -115,7 +115,7 @@ print(data);   // expect: [-3, 0, 1, 2, 5, 5, 6, 9]
 const memo = {};
 fn mfib(n) {
     if n < 2 { return n; }
-    if has(memo, n) { return memo[n]; }
+    if memo:has(n) { return memo[n]; }
     const v = mfib(n - 1) + mfib(n - 2);
     memo[n] = v;
     v

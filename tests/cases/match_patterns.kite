@@ -111,9 +111,9 @@ print(hits);   // expect: 61
 const fs = [];
 for e in [Expr.Num(1), Expr.Num(2), Expr.Neg(Expr.Num(3))] {
     match e {
-        Num(n) => push(fs, || => n * 10),
-        Neg(Num(n)) if n > 5 => push(fs, || => 0),
-        Neg(Num(n)) => push(fs, || => -n),
+        Num(n) => fs:push(|| => n * 10),
+        Neg(Num(n)) if n > 5 => fs:push(|| => 0),
+        Neg(Num(n)) => fs:push(|| => -n),
         _ => {}
     }
 }
@@ -121,19 +121,19 @@ print(fs[0](), fs[1](), fs[2]());   // expect: 10 20 -3
 
 // a guard that captures a binding and then fails does not leak it into the next arm
 const gs = [];
-match 5 { n if { push(gs, || => n); false } => 1, n => { n = 6; 2 } }
+match 5 { n if { gs:push(|| => n); false } => 1, n => { n = 6; 2 } }
 print(gs[0]());   // expect: 5
 
 // option-like unions
 union Option { None, Some(v) }
-fn first(t) { if len(t) == 0 { Option.None } else { Option.Some(t[0]) } }
+fn first(t) { if t:len() == 0 { Option.None } else { Option.Some(t[0]) } }
 fn unwrap_or(o, d) { match o { Some(v) => v, None => d } }
 print(unwrap_or(first([]), "empty"), unwrap_or(first([7, 8]), "empty"));   // expect: empty 7
 
 // linked list
 union List { Nil, Cons(head, tail) }
 fn sum(l) { match l { Cons(h, t) => h + sum(t), Nil => 0 } }
-fn from_array(a, i) { if i == len(a) { List.Nil } else { List.Cons(a[i], from_array(a, i + 1)) } }
+fn from_array(a, i) { if i == a:len() { List.Nil } else { List.Cons(a[i], from_array(a, i + 1)) } }
 print(sum(from_array([1, 2, 3, 4], 0)));   // expect: 10
 
 // not matching anything is a runtime error that names the value

@@ -1,7 +1,7 @@
 // Expected failures are values: `Result` (Ok / Err) and `Option` (Some / None), passed along with `?`.
 // Bugs (a wrong type, a bad index, `panic(..)`) are panics: they end the program with a stack trace.
 fn parse_age(s) {
-    const n = parse_num(s)?;                       // Err(..) is returned right away
+    const n = s:parse_num()?;                       // Err(..) is returned right away
     if n < 0 { return Err(Error("negative age"):with_kind("range")); }
     Ok(n)
 }

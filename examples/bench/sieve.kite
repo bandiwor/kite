@@ -1,6 +1,6 @@
 fn sieve(n) {
     const flags = [];
-    for i in 0..n + 1 { push(flags, true); }
+    for i in 0..n + 1 { flags:push(true); }
     var count = 0;
     for i in 2..n + 1 {
         if flags[i] {

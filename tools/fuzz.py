@@ -251,9 +251,9 @@ def kexpr(e):
         return f"{e[1]}({kexpr(e[2])})"
     if k == "tget":
         _, t, ie, kk = e
-        return f"do {{ const {kk} = ({kexpr(ie)} % 5); if has({t}, {kk}) {{ {t}[{kk}] }} else {{ 0 }} }}"
+        return f"do {{ const {kk} = ({kexpr(ie)} % 5); if {t}:has({kk}) {{ {t}[{kk}] }} else {{ 0 }} }}"
     if k == "tlen":
-        return f"len({e[1]})"
+        return f"{e[1]}:len()"
     if k == "pget":
         return f"{e[1]}.{e[2]}"
     if k == "block":
@@ -318,13 +318,13 @@ def kstmt(s):
         return f"{s[1]}[({kexpr(s[2])} % 5)] = {kexpr(s[3])};"
     if k == "taug":
         _, t, ie, op, e, kk = s
-        return f"do {{ const {kk} = ({kexpr(ie)} % 5); if has({t}, {kk}) {{ {t}[{kk}] {op}= ({kexpr(e)} % 7); }} }}"
+        return f"do {{ const {kk} = ({kexpr(ie)} % 5); if {t}:has({kk}) {{ {t}[{kk}] {op}= ({kexpr(e)} % 7); }} }}"
     if k == "tdel":
         return f"{s[1]}[({kexpr(s[2])} % 5)] = nil;"
     if k == "tpush":
         # tables have no push: take the first free integer key
         kk = "pk_" + s[1]
-        return f"do {{ const {kk}v = {kexpr(s[2])}; var {kk} = 0; while has({s[1]}, {kk}) {{ {kk} += 1; }} {s[1]}[{kk}] = {kk}v; }}"
+        return f"do {{ const {kk}v = {kexpr(s[2])}; var {kk} = 0; while {s[1]}:has({kk}) {{ {kk} += 1; }} {s[1]}[{kk}] = {kk}v; }}"
     if k == "tsum":
         _, t, sv, kk, vv, with_key = s
         if with_key:

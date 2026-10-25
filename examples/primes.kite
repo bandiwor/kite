@@ -1,10 +1,10 @@
 fn sieve(n) {
     const composite = [];
-    for i in 0..n + 1 { push(composite, false); }
+    for i in 0..n + 1 { composite:push(false); }
     const primes = [];
     for i in 2..n + 1 {
         if composite[i] { continue; }
-        push(primes, i);
+        primes:push(i);
         var j = i * i;
         while j <= n {
             composite[j] = true;
@@ -15,5 +15,5 @@ fn sieve(n) {
 }
 
 const p = sieve(100);
-print(len(p), "primes below 100:");
+print(p:len(), "primes below 100:");
 print(p);

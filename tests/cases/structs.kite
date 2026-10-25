@@ -1,3 +1,4 @@
+import "std/math";
 struct Vec2 { x, y }
 
 impl Vec2 {
@@ -31,7 +32,7 @@ print(a * b);          // expect: 11
 print(-a);             // expect: (-1, -2)
 print(a == Vec2(1, 2), a != b, a == b);   // expect: true true false
 print(a < b, a > b, a <= b, a >= b);      // expect: true false true false
-print(len(a));         // expect: 2
+print(a:len());         // expect: 2
 print(b:length());     // expect: 5
 print(Vec2.length(b)); // expect: 5
 print(type(a), type(Vec2));   // expect: Vec2 struct

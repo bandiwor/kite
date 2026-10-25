@@ -1,0 +1,18 @@
+// math and fs are built in, but not global: they have to be imported
+print(catch_panic(|| => math.sqrt(4)));   // expect: Err(undefined variable 'math')
+print(catch_panic(|| => fs.exists(".")));   // expect: Err(undefined variable 'fs')
+
+import "std/math";
+import { floor, pi } from "std/math";
+import "std/fs" as files;
+print(math.sqrt(16), floor(2.7), pi > 3.14, math.max(1, 5, 3));   // expect: 4 2 true 5
+print(files.join("a", "b"), files.exists("/definitely/not/here"), type(files), type(math));   // expect: a/b false table table
+print(math.floor == floor);   // expect: true
+
+// modules are shared and cached like any other
+import "std/math" as m2;
+print(m2 == math);   // expect: true
+
+// a module file imports what it needs on its own; the main file's imports are not visible there
+import "mods/uses_std";
+print(uses_std.hyp(3, 4), uses_std.path("x", "y"));   // expect: 5 x/y

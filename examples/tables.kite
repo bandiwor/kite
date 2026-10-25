@@ -2,12 +2,12 @@
 const text = "the quick brown fox jumps over the lazy dog the end";
 const freq = {};
 for word in text:split(" ") {
-    freq[word] = if has(freq, word) { freq[word] + 1 } else { 1 };
+    freq[word] = if freq:has(word) { freq[word] + 1 } else { 1 };
 }
 
 const entries = [];
-for word, count in freq { push(entries, { word, count }); }
-sort(entries, |a, b| => a.count > b.count || (a.count == b.count && a.word < b.word));
+for word, count in freq { entries:push({ word, count }); }
+entries:sort(|a, b| => a.count > b.count || (a.count == b.count && a.word < b.word));
 
 for e in entries { print(string.format("{:<6} {}", e.word, e.count)); }
-print("distinct words:", len(freq));
+print("distinct words:", freq:len());

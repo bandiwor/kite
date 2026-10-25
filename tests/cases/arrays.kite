@@ -1,29 +1,29 @@
 // arrays are a type of their own: positional, bounds-checked, and they keep every value, nil included
 const a = [10, 20, 30];
-print(type(a), len(a), a[0], a[2], a);   // expect: array 3 10 30 [10, 20, 30]
-print([], len([]), type([]), type({}));   // expect: [] 0 array table
+print(type(a), a:len(), a[0], a[2], a);   // expect: array 3 10 30 [10, 20, 30]
+print([], []:len(), type([]), type({}));   // expect: [] 0 array table
 const holes = [1, nil, 3, nil];
-print(holes, len(holes), holes[1], holes[3]);   // expect: [1, nil, 3, nil] 4 nil nil
-print([nil], len([nil]), [[], [[]]], [1, "two", [3], { four: 4 }, nil, true]);   // expect: [nil] 1 [[], [[]]] [1, "two", [3], {four: 4}, nil, true]
+print(holes, holes:len(), holes[1], holes[3]);   // expect: [1, nil, 3, nil] 4 nil nil
+print([nil], [nil]:len(), [[], [[]]], [1, "two", [3], { four: 4 }, nil, true]);   // expect: [nil] 1 [[], [[]]] [1, "two", [3], {four: 4}, nil, true]
 
 // growing: push / insert / extend / concat
 const g = [];
-push(g, 1);
+g:push(1);
 g:push(nil);
-print(push(g, 3, 4), g);   // expect: 4 [1, nil, 3, 4]
-insert(g, 1, "x");
-insert(g, len(g), "end");
+print(g:push(3, 4), g);   // expect: 4 [1, nil, 3, 4]
+g:insert(1, "x");
+g:insert(g:len(), "end");
 print(g);   // expect: [1, "x", nil, 3, 4, "end"]
 g:extend([7, 8]);
-print(g:concat([0], [9]), len(g));   // expect: [1, "x", nil, 3, 4, "end", 7, 8, 0, 9] 8
+print(g:concat([0], [9]), g:len());   // expect: [1, "x", nil, 3, 4, "end", 7, 8, 0, 9] 8
 
 // shrinking: pop gives an Option (nil is a valid item), remove gives the item
 const s = [1, nil];
-print(pop(s), pop(s), pop(s), pop(s));   // expect: Some(nil) Some(1) None None
+print(s:pop(), s:pop(), s:pop(), s:pop());   // expect: Some(nil) Some(1) None None
 const r = ["a", "b", "c", "d"];
-print(remove(r, 1), r, r:remove(0), r);   // expect: b ["c", "d"] a ["c", "d"]
+print(r:remove(1), r, r:remove(0), r);   // expect: b ["c", "d"] a ["c", "d"]
 r:clear();
-print(r, len(r));   // expect: [] 0
+print(r, r:len());   // expect: [] 0
 
 // reading and writing: only existing positions; growth is explicit
 const b = [1, 2, 3];
@@ -38,10 +38,10 @@ print(catch_panic(|| => b[0.5]));   // expect: Err(array index must be a non-neg
 print(catch_panic(|| => b["0"]));   // expect: Err(array index must be a number, got string)
 print(catch_panic(|| => b[nil]));   // expect: Err(array index must be a number, got nil)
 print(catch_panic(|| => [][0]));   // expect: Err(array index 0 is out of bounds (length 0))
-print(catch_panic(|| => insert([1], 3, 0)));   // expect: Err(insert: index 3 is out of bounds (length 1))
-print(catch_panic(|| => remove([1], 1)));   // expect: Err(remove: index 1 is out of bounds (length 1))
-print(catch_panic(|| => push(5, 1)));   // expect: Err(push: argument 1 must be an array, got number)
-print(catch_panic(|| => push({}, 1)));   // expect: Err(push: argument 1 must be an array, got table)
+print(catch_panic(|| => [1]:insert(3, 0)));   // expect: Err(insert: index 3 is out of bounds (length 1))
+print(catch_panic(|| => [1]:remove(1)));   // expect: Err(remove: index 1 is out of bounds (length 1))
+print(catch_panic(|| => (5):push(1)));   // expect: Err(cannot call method 'push' on number)
+print(catch_panic(|| => ({}):push(1)));   // expect: Err(table has no function 'push')
 
 // checked access returns an Option
 print(a:get(0), a:get(3), a:get(-1), holes:get(1), [] :first(), a:first(), a:last());   // expect: Some(10) None None Some(nil) None Some(10) Some(30)
@@ -57,7 +57,7 @@ const c = [3, 1, 2];
 print(c:sort(), c:reverse(), c == c:copy(), c:copy(), c);   // expect: [3, 2, 1] [3, 2, 1] false [3, 2, 1] [3, 2, 1]
 const nested = [[1], [2]];
 const shallow = nested:copy();
-push(shallow[0], 99);
+shallow[0]:push(99);
 print(nested, shallow == nested, shallow[0] == nested[0]);   // expect: [[1, 99], [2]] false true
 print(array.new(3), array.new(2, 0), array.new(0), array.new(2, "x"));   // expect: [nil, nil, nil] [0, 0] [] ["x", "x"]
 const grid = array.new(2);
@@ -65,10 +65,10 @@ for i in 0..2 { grid[i] = array.new(2, i); }
 print(grid);   // expect: [[0, 0], [1, 1]]
 
 // sort: numbers, strings, custom order, stable, errors
-print(sort([5, 2, 9, 1]), sort(["b", "a", "c"]), sort([3, 1, 2], |x, y| => x > y));   // expect: [1, 2, 5, 9] ["a", "b", "c"] [3, 2, 1]
+print([5, 2, 9, 1]:sort(), ["b", "a", "c"]:sort(), [3, 1, 2]:sort(|x, y| => x > y));   // expect: [1, 2, 5, 9] ["a", "b", "c"] [3, 2, 1]
 const people = [{ n: "a", age: 30 }, { n: "b", age: 25 }, { n: "c", age: 30 }, { n: "d", age: 25 }];
-print(map(sort(people, |x, y| => x.age < y.age), |p| => p.n));   // expect: ["b", "d", "a", "c"]
-print(catch_panic(|| => sort([1, "a"])));   // expect: Err(sort: cannot compare string and number)
+print((people:sort(|x, y| => x.age < y.age)):map(|p| => p.n));   // expect: ["b", "d", "a", "c"]
+print(catch_panic(|| => [1, "a"]:sort()));   // expect: Err(sort: cannot compare string and number)
 
 // iteration
 var total = 0;
@@ -81,24 +81,24 @@ for v in [nil, nil, 1] { seen += 1; }
 print(seen);   // expect: 3
 const grow = [1];
 var steps = 0;
-for v in grow { steps += 1; if steps < 4 { push(grow, v); } }
-print(steps, len(grow));   // expect: 4 4
+for v in grow { steps += 1; if steps < 4 { grow:push(v); } }
+print(steps, grow:len());   // expect: 4 4
 
 // map / filter / reduce / each on arrays give arrays; the callback may take the index
-print(map([1, 2, 3], |x| => x * x), map(["a", "b"], |x, i| => x + i), filter([1, 2, 3, 4], |x| => x % 2 == 0));   // expect: [1, 4, 9] ["a0", "b1"] [2, 4]
-print(map([1, nil, 3], |x| => x), filter([nil, 1, false, 2], |x| => x == nil || x == 2));   // expect: [1, nil, 3] [nil, 2]
-print(reduce([1, 2, 3, 4], |s, x| => s + x), reduce([1, 2, 3], |s, x| => s + x, 10), reduce([], |s, x| => s), reduce([], |s, x| => s, "init"));   // expect: 10 16 nil init
-each(["x", "y"], |v, i| => write(i, v, ";"));
+print([1, 2, 3]:map(|x| => x * x), ["a", "b"]:map(|x, i| => x + i), [1, 2, 3, 4]:filter(|x| => x % 2 == 0));   // expect: [1, 4, 9] ["a0", "b1"] [2, 4]
+print([1, nil, 3]:map(|x| => x), [nil, 1, false, 2]:filter(|x| => x == nil || x == 2));   // expect: [1, nil, 3] [nil, 2]
+print([1, 2, 3, 4]:reduce(|s, x| => s + x), [1, 2, 3]:reduce(|s, x| => s + x, 10), []:reduce(|s, x| => s), []:reduce(|s, x| => s, "init"));   // expect: 10 16 nil init
+["x", "y"]:each(|v, i| => write(i, v, ";"));
 print();   // expect: 0x;1y;
-print(map(map([1, 2], |x| => [x, x * 2]), |p| => p[0] + p[1]));   // expect: [3, 6]
+print(([1, 2]:map(|x| => [x, x * 2])):map(|p| => p[0] + p[1]));   // expect: [3, 6]
 
 // string helpers produce arrays
 print("a,b,,c":split(","), "héy":chars(), "abc":split(""), [1, nil, "x"]:join("|"), []:join(","));   // expect: ["a", "b", "", "c"] ["h", "é", "y"] ["a", "b", "c"] 1|nil|x 
-print(type("a b":split(" ")), len("a b c":split(" ")));   // expect: array 3
+print(type("a b":split(" ")), ("a b c":split(" ")):len());   // expect: array 3
 
 // keys / values / has
-print(keys(["a", "b"]), values(["a", nil]), has(["a", nil], 1), has(["a"], 1), has(["a"], -1), has(["a"], "0"));   // expect: [0, 1] ["a", nil] true false false false
-print(keys({ x: 1, y: 2 }), values({ x: 1, y: 2 }));   // expect: ["x", "y"] [1, 2]
+print(["a", "b"]:keys(), ["a", nil]:values(), ["a", nil]:has(1), ["a"]:has(1), ["a"]:has(-1), ["a"]:has("0"));   // expect: [0, 1] ["a", nil] true false false false
+print(({ x: 1, y: 2 }):keys(), ({ x: 1, y: 2 }):values());   // expect: ["x", "y"] [1, 2]
 
 // identity, not structure; arrays are fine as table keys and values
 print([1] == [1], a == a, { [a]: 1 }[a], [a][0] == a);   // expect: false true 1 true
@@ -119,12 +119,12 @@ print([Some(1), None, Ok(2)], [Some(1), None]:map(|o| => o:is_some()));   // exp
 
 // self-reference and deep nesting print with a depth limit
 const loop_ = [1];
-push(loop_, loop_);
+loop_:push(loop_);
 print(loop_);   // expect: [1, [1, [1, [1, [1, [1, [1, [...]]]]]]]]
 
 // a lot of items
 var big = [];
-for i in 0..50000 { push(big, i); }
+for i in 0..50000 { big:push(i); }
 var sum = 0;
 for v in big { sum += v; }
-print(len(big), sum, big[49999], pop(big):unwrap(), len(big));   // expect: 50000 1249975000 49999 49999 49999
+print(big:len(), sum, big[49999], big:pop():unwrap(), big:len());   // expect: 50000 1249975000 49999 49999 49999

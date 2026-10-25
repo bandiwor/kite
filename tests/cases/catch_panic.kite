@@ -24,7 +24,7 @@ fn depth(n) { if n == 0 { 0 } else { 1 + depth(n - 1) } }
 print(depth(10000));   // expect: 10000
 
 // nested catch_panics and panics raised in callbacks
-const nested = catch_panic(|| => map([1, 2, 3], |x| => if x == 2 { panic("in map") } else { x }));
+const nested = catch_panic(|| => [1, 2, 3]:map(|x| => if x == 2 { panic("in map") } else { x }));
 print(nested);   // expect: Err(in map)
 print(catch_panic(|| => catch_panic(|| => panic("inner")):unwrap_err().message));   // expect: Ok("inner")
 

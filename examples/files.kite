@@ -1,4 +1,5 @@
 // Working with files: every fallible fs call returns a Result, so `?` keeps the happy path short.
+import "std/fs";
 const dir = "kite_example_tmp";
 fs.remove_all(dir);
 fs.mkdir(dir):expect("cannot create the work directory");
@@ -11,16 +12,16 @@ fs.write(csv, "name,score\nada,91\nlinus,78\ngrace,x\nken,85\n"):unwrap();
 fn load_scores(path) {
     const rows = fs.lines(path)?;
     var scores = [];
-    for i in 1..len(rows) {                       // skip the header
+    for i in 1..rows:len() {                       // skip the header
         const cells = rows[i]:split(",");
-        const score = parse_num(cells[1]):map_err(|e| => Error("line " + (i + 1) + ": " + e):with_kind("parse"))?;
-        push(scores, { name: cells[0], score });
+        const score = cells[1]:parse_num():map_err(|e| => Error("line " + (i + 1) + ": " + e):with_kind("parse"))?;
+        scores:push({ name: cells[0], score });
     }
     Ok(scores)
 }
 
 match load_scores(csv) {
-    Ok(scores) => print("loaded", len(scores)),
+    Ok(scores) => print("loaded", scores:len()),
     Err(e) => print("could not load:", e, "[" + e.kind + "]"),
 }
 
@@ -33,7 +34,7 @@ for s in scores {
     total += s.score;
     if s.score > best.score { best = s; }
 }
-print("best:", best.name, best.score, "average:", total / len(scores));
+print("best:", best.name, best.score, "average:", total / scores:len());
 
 // 4. a report, then a log that grows
 const report = fs.join(dir, "report.txt");

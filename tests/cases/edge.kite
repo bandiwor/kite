@@ -1,7 +1,7 @@
 const t = { a: 1, b: 2, c: 3 };
 var n = 0;
 for k, v in t { n += 1; if n < 20 { t["k" + n] = n; } }
-print(n >= 3, len(t));
+print(n >= 3, t:len());
 
 const cyc = { name: "loop" };
 cyc.self = cyc;
@@ -12,26 +12,26 @@ impl Bad { fn str(self) { 42 } }
 print(catch_panic(print, Bad(1)):unwrap_err().message);
 
 const arr = [1, 2, 3];
-for i, v in arr { if i == 0 { remove(arr, 0); } }
+for i, v in arr { if i == 0 { arr:remove(0); } }
 print(arr);
 
 // deleting every key while iterating
 const m = {};
 for i in 0..50 { m["k" + i] = i; }
-for k in keys(m) { m[k] = nil; }
-print(len(m));
+for k in m:keys() { m[k] = nil; }
+print(m:len());
 
 // arrays keep nil
 const holes = [1, nil, 3];
-print(len(holes), holes[0], holes[1], holes[2]);
-push(holes, nil);
-print(len(holes), holes);
+print(holes:len(), holes[0], holes[1], holes[2]);
+holes:push(nil);
+print(holes:len(), holes);
 
 // arrays do not grow by assignment; they are bounds-checked
 const sparse = [];
 print(catch_panic(|| => { sparse[5] = "x"; }));
 print(catch_panic(|| => sparse[0]));
-push(sparse, "a", "b");
+sparse:push("a", "b");
 sparse[1] = "z";
 print(sparse, array.new(3, "-"));
 
@@ -54,8 +54,8 @@ print(catch_panic(|| => (5)(1)):unwrap_err().message);
 print(catch_panic(|| => "abc".x):unwrap_err().message);
 print(catch_panic(|| => nil.x):unwrap_err().message);
 print(catch_panic(|| => nil[0]):unwrap_err().message);
-print(catch_panic(|| => len(5)):unwrap_err().message);
-print(catch_panic(|| => push(5, 1)):unwrap_err().message);
+print(catch_panic(|| => (5):len()):unwrap_err().message);
+print(catch_panic(|| => (5):push(1)):unwrap_err().message);
 print(catch_panic(|| => for i in 5 { }):unwrap_err().message);
 print(catch_panic(|| => for i in "a".."b" { }):unwrap_err().message);
 
@@ -80,7 +80,7 @@ print(catch_panic(|| => for i in "a".."b" { }):unwrap_err().message);
 // expect: cannot read field 'x' of string
 // expect: cannot read field 'x' of nil
 // expect: cannot index a value of type nil
-// expect: len: cannot take the length of number
-// expect: push: argument 1 must be an array, got number
+// expect: cannot call method 'len' on number
+// expect: cannot call method 'push' on number
 // expect: cannot iterate over number
 // expect: range bounds must be numbers, got string and string

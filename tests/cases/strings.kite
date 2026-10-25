@@ -1,5 +1,6 @@
+import "std/math";
 const s = "Hello, World";
-print(len(s), s:upper(), s:lower());   // expect: 12 HELLO, WORLD hello, world
+print(s:len(), s:upper(), s:lower());   // expect: 12 HELLO, WORLD hello, world
 print(s:sub(0, 5), s:sub(7), s:sub(-5), s:sub(3, -3));   // expect: Hello World World lo, Wo
 print(s:find("World"), s:find("xyz"), s:find("o", 5));   // expect: 7 nil 8
 print(s:contains("lo, W"), s:starts_with("Hell"), s:ends_with("d"));   // expect: true true true

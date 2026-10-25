@@ -1,6 +1,7 @@
 // Structs have fixed fields. There are no classes or inheritance: `impl`
 // attaches plain functions, and a few special names are picked up by the VM
 // (operator overloads, `new`, `destroy`, `str`, ...).
+import "std/math";
 struct Vec2 { x, y }
 
 impl Vec2 {

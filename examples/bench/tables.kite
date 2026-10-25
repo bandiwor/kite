@@ -9,7 +9,7 @@ fn run() {
         sum += t[i * 3];
     }
     const a = [];
-    for i in 0..2000000 { push(a, i); }
+    for i in 0..2000000 { a:push(i); }
     for i in 0..2000000 { sum += a[i]; }
     sum
 }

@@ -12,18 +12,18 @@ print(calc(1, 0, 1):unwrap_err().kind);   // expect: math
 // the early return really happens: nothing after the failing `?` runs
 var log = [];
 fn steps(fail_at) {
-    push(log, "start");
+    log:push("start");
     const a = (if fail_at == 1 { Err("e1") } else { Ok(1) })?;
-    push(log, "after 1");
+    log:push("after 1");
     const b = (if fail_at == 2 { Err("e2") } else { Ok(2) })?;
-    push(log, "after 2");
+    log:push("after 2");
     Ok(a + b)
 }
-print(steps(0), len(log));   // expect: Ok(3) 3
+print(steps(0), log:len());   // expect: Ok(3) 3
 log = [];
-print(steps(1), len(log));   // expect: Err("e1") 1
+print(steps(1), log:len());   // expect: Err("e1") 1
 log = [];
-print(steps(2), len(log));   // expect: Err("e2") 2
+print(steps(2), log:len());   // expect: Err("e2") 2
 
 // Option
 fn first(t) { t:get(0) }
@@ -44,7 +44,7 @@ print(chain(Ok(1)), chain(Err("e")));   // expect: Ok(20) Err("e")
 
 // `?` returns from the innermost function only: lambdas are their own functions
 fn parse_all(items) {
-    const parsed = map(items, |s| => { const n = parse_num(s)?; Ok(n * 2) });
+    const parsed = items:map(|s| => { const n = s:parse_num()?; Ok(n * 2) });
     Ok(parsed)
 }
 print(parse_all(["1", "x"]));   // expect: Ok([Ok(2), Err(invalid number "x")])
@@ -53,7 +53,7 @@ print(parse_all(["1", "x"]));   // expect: Ok([Ok(2), Err(invalid number "x")])
 fn find_first_bad(items) {
     var count = 0;
     for s in items {
-        const n = parse_num(s)?;
+        const n = s:parse_num()?;
         count += n;
     }
     for i in 0..3 { if i == 2 { Err("loop " + i)?; } }
@@ -105,7 +105,7 @@ print(catch_panic(|| => Error("e")?));   // expect: Err(`?` expects an Option or
 // GC safety: many allocations between a `?` and its use
 fn heavy(n) {
     var acc = [];
-    for i in 0..n { const v = Ok([i, i + 1])?; push(acc, v); }
-    Ok(len(acc))
+    for i in 0..n { const v = Ok([i, i + 1])?; acc:push(v); }
+    Ok(acc:len())
 }
 print(heavy(500));   // expect: Ok(500)

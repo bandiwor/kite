@@ -20,14 +20,14 @@ print(p[1]());   // expect: 2
 // each iteration gets a fresh variable
 var fs = [];
 for i in 0..3 {
-    push(fs, || => i * 10);
+    fs:push(|| => i * 10);
 }
 print(fs[0](), fs[1](), fs[2]());   // expect: 0 10 20
 var gs = [];
 var j = 0;
 while j < 3 {
     var captured = j;
-    push(gs, || => captured);
+    gs:push(|| => captured);
     j += 1;
 }
 print(gs[0](), gs[1](), gs[2]());   // expect: 0 1 2
@@ -36,7 +36,7 @@ print(gs[0](), gs[1](), gs[2]());   // expect: 0 1 2
 var hs = [];
 for i in 0..10 {
     var sq = i * i;
-    push(hs, || => sq);
+    hs:push(|| => sq);
     if i == 2 { break; }
 }
 print(hs[0](), hs[1](), hs[2]());   // expect: 0 1 4
@@ -77,6 +77,6 @@ print(oc[0], oc[1]());   // expect: 2 2
 var saved = [];
 do {
     var t = "inner";
-    push(saved, || => t);
+    saved:push(|| => t);
 }
 print(saved[0]());   // expect: inner

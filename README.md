@@ -140,30 +140,31 @@ fn counter() {
 ### Массивы
 
 ```kite
-const a = [10, nil, 30];           // nil — обычный элемент: len(a) == 3
-push(a, 40, 50);  a:push(60);      // функция или метод; возвращают новую длину
+const a = [10, nil, 30];           // nil — обычный элемент: a:len() == 3
+a:push(40, 50);  a:push(60);       // методы; push возвращает новую длину
 a[0] += 5;                         // читать и писать можно только существующие позиции
 a[9];  a[-1];  a[1.5];  a[3] = 0;  // паника: index out of bounds / must be a non-negative integer
 a:get(9);                          // None; a:get(0) — Some(15): проверяемый доступ возвращает Option
-pop(a);                            // Some(60) или None — nil может быть элементом, поэтому Option
+a:pop();                            // Some(60) или None — nil может быть элементом, поэтому Option
 for v in a { … }   for i, v in a { … }
-print(map(a, |x, i| => x), array.new(3, 0), [1, 2, 3]:slice(1));
+print(a:map(|x, i| => x), array.new(3, 0), [1, 2, 3]:slice(1));
 ```
 
-`[1, nil]` и `push(a, nil)` сохраняют `nil`; массив не растёт присваиванием (`a[len(a)] = v` — паника, используйте `push`) и никогда не
+`[1, nil]` и `a:push(nil)` сохраняют `nil`; массив не растёт присваиванием (`a[a:len()] = v` — паника, используйте `push`) и никогда не
 превращается в хеш-таблицу. `==` сравнивает массивы по идентичности (как таблицы); `copy()` — поверхностная копия.
 
 | | |
 |---|---|
-| `push(a, v…)` `pop(a)` `insert(a, i, v)` `remove(a, i)` `clear(a)` | изменение (`i` для `insert` ≤ длины); `pop` → `Option`, `remove` → элемент |
-| `get(a, i)` `first(a)` `last(a)` `index_of(a, v)` `contains(a, v)` | проверяемый доступ и поиск → `Option` (`contains` → bool) |
-| `slice(a, from, to?)` `concat(a, b…)` `copy(a)` `extend(a, b)` `reverse(a)` `sort(a, less?)` | `slice/concat/copy` — новый массив; `extend/reverse/sort` — на месте, возвращают `a` |
-| `map filter reduce each(a, f)` | `f(x)` или `f(x, i)`; `map`/`filter` возвращают массив |
-| `join(a, sep?)` `keys(a)` `values(a)` `has(a, i)` `len(a)` | |
+| `push(v…)` `pop()` `insert(i, v)` `remove(i)` `clear()` | изменение (`i` для `insert` ≤ длины); `pop` → `Option`, `remove` → элемент |
+| `get(i)` `first()` `last()` `index_of(v)` `contains(v)` | проверяемый доступ и поиск → `Option` (`contains` → bool) |
+| `slice(from, to?)` `concat(b…)` `copy()` `extend(b)` `reverse()` `sort(less?)` | `slice/concat/copy` — новый массив; `extend/reverse/sort` — на месте, возвращают массив |
+| `map(f)` `filter(f)` `reduce(f, init?)` `each(f)` | `f(x)` или `f(x, i)`; `map`/`filter` возвращают массив |
+| `join(sep?)` `keys()` `values()` `has(i)` `len()` | |
 | `array.new(n, fill?)` | массив из `n` копий |
 
-Все они есть и как обычные функции (`push(a, 1)`), и как методы (`a:push(1)`) — это одна и та же таблица `array`. `"a,b":split(",")`,
-`s:chars()`, `fs.list` и `fs.lines` возвращают массивы.
+Это именно методы: глобальных `push`, `len`, `map`… нет. `array` — пространство имён типа (как `Vec2` для структуры): `array.push(a, 1)` то же,
+что `a:push(1)`, а `array.new(n, fill)` — конструктор. Так же устроены `string` и `table`. `"a,b":split(",")`, `s:chars()`,
+`fs.list` и `fs.lines` возвращают массивы.
 
 ### Таблицы
 
@@ -171,7 +172,7 @@ print(map(a, |x, i| => x), array.new(3, 0), [1, 2, 3]:slice(1));
 const t = { name: "kite", "two words": 2, [1 + 1]: "computed", 3: "x" };
 t.name = "KITE";  t["k"] = 1;  t.k += 1;
 t.name = nil;                      // присвоение nil удаляет ключ
-print(len(t), t.missing);          // отсутствующий ключ — nil
+print(t:len(), t.missing);         // отсутствующий ключ — nil
 ```
 
 Ключи-строки сравниваются по содержимому, числа — по значению (`1 == 1.0`, `-0 == 0`), остальное — по идентичности.
@@ -207,7 +208,7 @@ print(v, v.x, Vec2.add(v, v), v:length());            // v:f(a) то же, чт�
 | `eq(a, b)` | `==` и `!=` |
 | `lt(a, b)` `le(a, b)` | `<`, `>` (через `lt`), `<=`, `>=` (через `le`, иначе `!lt`) |
 | `str(a)` | `print`, `str()`, конкатенация со строкой |
-| `len(a)` | `len(x)` |
+| `len(a)` | `x:len()` (как и любой другой метод из `impl`) |
 | `get(a, k)` `set(a, k, v)` | `a[k]`, `a[k] = v` и обращения к несуществующему полю |
 | `call(self, …)` | вызов экземпляра как функции |
 
@@ -228,7 +229,7 @@ union Shape {
 const c = Shape.Circle(2);
 print(c, c.radius, type(c), type(Shape));      // Circle(2) 2 Shape union
 c.radius = 5;                                  // поля вариантов читаются и пишутся по имени
-const make = Shape.Rect;                       // конструктор — обычная функция: map(xs, Shape.Circle)
+const make = Shape.Rect;                       // конструктор — обычная функция: xs:map(Shape.Circle)
 
 impl Shape {                                   // impl, перегрузки и destroy — как у структур
     fn area(self) {
@@ -295,7 +296,7 @@ print(geometry.origin(), geometry.how_many());
 
 ```kite
 fn parse_age(s) {
-    const n = parse_num(s)?;                 // Err(..) сразу возвращается из parse_age, Ok(v) даёт v
+    const n = s:parse_num()?;                // Err(..) сразу возвращается из parse_age, Ok(v) даёт v
     if n < 0 { return Err(Error("negative age"):with_kind("range")); }
     Ok(n)
 }
@@ -329,7 +330,7 @@ match parse_age(input) {
 
 Сравнение `==` структурное (`Some(1) == Some(1)`). `Error(msg)` создаёт ошибку, `:with_kind("parse")` задаёт категорию
 для сопоставления. `Err` может нести любое значение, а не только `Error`. Для перехода от `nil` к `Option` есть `option(x)`,
-для чисел — `parse_num(s)` (`Ok(число)` или `Err`). Свои функции стандартной библиотеки, которые могут не получиться, тоже
+для строк-чисел — `s:parse_num()` (`Ok(число)` или `Err`). Свои функции стандартной библиотеки, которые могут не получиться, тоже
 стоит возвращать как `Result`.
 
 **Паники** — это то, что нельзя «обработать»: баг или невозможная операция (`1 + nil`, индекс вне диапазона, вызов `nil`,
@@ -345,28 +346,53 @@ const r = catch_panic(|| => 1 + nil);   // Err(Error) с kind "panic": посл�
 `catch_panic(f, args…)` возвращает `Ok(результат)` или `Err(Error)`; его место — на границе (тесты, REPL, плагины, обработчик запросов),
 а не в обычной логике: ожидаемое выражайте через `Result`.
 
-### Встроенные функции
+### Встроенное: функции, методы, модули
+
+Глобально доступно только то, что не принадлежит какому-то типу:
 
 | | |
 |---|---|
 | ввод/вывод | `print(...)` (с переводом строки), `write(...)`, `input(prompt?)` |
-| типы | `type(x)`, `str(x)`, `num(x)` (nil, если не число; для ошибки с причиной — `parse_num`), `len(x)` |
-| массивы | см. «Массивы»: `push pop insert remove get first last slice concat extend reverse copy clear index_of contains join`, `array.new` |
-| таблицы | `remove(t, k)`, `keys(t)`, `values(t)`, `has(t, k)`, `len(t)` |
-| функциональные | `sort(a, less?)` (устойчивая), `map(c, f)`, `filter(c, f)`, `reduce(c, f, init?)`, `each(c, f)` для массивов и таблиц — если у `f` два параметра, второй получает индекс/ключ |
-| ошибки | `assert(c, msg?)`, `panic(msg)`, `catch_panic(f, args…)` → `Result`; `parse_num(s)` → `Result`, `option(x)` → `Option`; `Some Ok Err None Error` |
+| типы | `type(x)`, `str(x)`, `num(x)` (nil, если не число; с причиной — `s:parse_num()`) |
+| ошибки | `assert(c, msg?)`, `panic(msg)`, `catch_panic(f, args…)` → `Result`, `option(x)` → `Option`; типы и значения `Option Some None Result Ok Err Error` |
 | система | `clock()`, `time()`, `exit(code?)`, `gc()` (возвращает освобождённые байты), `mem()`, `destroy(x)` |
-| `math` | `floor ceil round trunc abs sqrt sin cos tan asin acos atan atan2 exp ln log2 log10 pow min max sign random seed`, `pi e huge` |
-| `fs` | `read write append lines exists is_file is_dir size list mkdir remove remove_all rename copy cwd` и пути `join basename dirname stem ext`; см. ниже |
-| `string` | `len upper lower trim reverse sub find contains starts_with ends_with split join replace rep chars byte char format`; методы вызываются как `s:upper()` |
 
-### Файлы: `fs`
+Всё, что работает с конкретным типом, — **метод** этого типа (`x:name(…)`), а не глобальная функция. Пространство имён типа (`array`, `string`, `table`)
+доступно глобально и хранит те же функции: `string.upper(s)` ≡ `s:upper()`.
+
+| тип | методы |
+|---|---|
+| `array` | см. «Массивы» (`push pop insert remove get first last slice concat extend reverse copy clear index_of contains join sort map filter reduce each keys values has len`), `array.new(n, fill?)` |
+| `table` | `len keys values has remove map filter reduce each`; одноимённое поле таблицы-функция выигрывает: `{ keys: |self| => 1 }:keys()` вызовет поле, `table.keys(t)` — библиотечную версию |
+| `string` | `len upper lower trim reverse sub find contains starts_with ends_with split join replace rep chars byte char format parse_num`; `"{} {:.2}":format(a, b)` |
+| структуры | всё, что вы определили в `impl`, в том числе `len` |
+
+Если блок `{` начинается с вызова метода (`{ log:push(1); … }`), он считается блоком, а не таблицей — при условии, что вокруг `:` нет пробелов;
+`{ key: f(1) }` с пробелом остаётся таблицей.
+
+**Стандартные модули** встроены в язык, но не глобальны — их нужно явно подключить через `import`, как и обычные модули (путь начинается с `std/`):
+
+```kite
+import "std/math";                       // → math.sqrt(2)
+import { floor, pi } from "std/math";
+import "std/fs" as files;                // → files.read(…)
+```
+
+| модуль | содержимое |
+|---|---|
+| `std/math` | `floor ceil round trunc abs sqrt sin cos tan asin acos atan atan2 exp ln log2 log10 pow min max sign random seed`, `pi e huge` |
+| `std/fs` | `read write append lines exists is_file is_dir size list mkdir remove remove_all rename copy cwd` и пути `join basename dirname stem ext`; см. ниже |
+
+Неизвестное имя `std/…` — ошибка со списком доступных модулей. Каждый файл-модуль подключает нужные ему стандартные модули сам.
+
+### Файлы: `std/fs`
 
 Операции над файлами целиком (без дескрипторов); всё, что может не получиться из-за внешнего мира, возвращает `Result`,
 а `Err(Error)` несёт `kind`: `"not_found"`, `"permission"`, `"exists"`, `"utf8"` (файл не текст) или `"io"`. Сообщение содержит путь.
 Передать не строку вместо пути — баг, то есть паника.
 
 ```kite
+import "std/fs";
 fs.write("notes.txt", "one\ntwo\n")?;           // Ok(nil)
 const text = fs.read("notes.txt")?;              // Ok("one\ntwo\n")
 for line in fs.lines("notes.txt")? { print(line); }   // без символов конца строки

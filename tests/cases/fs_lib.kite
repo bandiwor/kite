@@ -1,4 +1,5 @@
 // the fs library: every operation that can fail returns a Result
+import "std/fs";
 const dir = fs.join("target", "fs_lib_test");
 fs.remove_all(dir);   // leftovers of an aborted run (ignored if it does not exist)
 print(fs.exists(dir), fs.mkdir(dir), fs.is_dir(dir), fs.is_file(dir));   // expect: false Ok(nil) true false
@@ -44,7 +45,7 @@ print(fs.read(dir):is_err(), fs.mkdir(fs.join(dir, "bin")):is_err());   // expec
 fn copy_upper(from, to) {
     const text = fs.read(from)?;
     fs.write(to, text:upper())?;
-    Ok(len(text))
+    Ok(text:len())
 }
 print(copy_upper(f, fs.join(dir, "up.txt")), fs.read(fs.join(dir, "up.txt")));   // expect: Ok(7) Ok("A\r\nB\n\nC")
 print(copy_upper(missing, fs.join(dir, "no.txt")):is_err(), fs.exists(fs.join(dir, "no.txt")));   // expect: true false
@@ -53,7 +54,7 @@ print(copy_upper(missing, fs.join(dir, "no.txt")):is_err(), fs.exists(fs.join(di
 print(fs.join("a", "b", "c.txt"), fs.join("a/", "b"), fs.join("a", "/abs"), fs.join("only"));   // expect: a/b/c.txt a/b /abs only
 print(fs.basename("a/b/c.tar.gz"), fs.stem("a/b/c.tar.gz"), fs.ext("a/b/c.tar.gz"), fs.dirname("a/b/c.tar.gz"));   // expect: c.tar.gz c.tar gz a/b
 print(fs.ext("Makefile"), fs.basename("a/b/"), fs.dirname("c.txt") == "", fs.dirname("/"), fs.ext(".bashrc"));   // expect: nil b true  nil
-print(type(fs.cwd():unwrap()), len(fs.cwd():unwrap()) > 0);   // expect: string true
+print(type(fs.cwd():unwrap()), (fs.cwd():unwrap()):len() > 0);   // expect: string true
 
 // mistakes are panics, not Errs
 print(catch_panic(|| => fs.read(5)):unwrap_err().message);   // expect: fs.read: argument 1 must be a string, got number

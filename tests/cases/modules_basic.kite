@@ -19,4 +19,4 @@ print(mu.Point == Point);   // expect: true
 
 // private names are not exported; exported vars are snapshots
 print(math_util.calls, math_util.is_even, math_util.snapshot);   // expect: nil nil 5
-print(has(math_util, "square"), has(math_util, "is_odd"), len(math_util));   // expect: true false 6
+print(math_util:has("square"), math_util:has("is_odd"), math_util:len());   // expect: true false 6

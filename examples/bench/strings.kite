@@ -1,14 +1,14 @@
 fn run() {
     var parts = [];
     for i in 0..300000 {
-        push(parts, "item" + i);
+        parts:push("item" + i);
     }
     const s = string.join(parts, ",");
     const back = string.split(s, ",");
     var n = 0;
-    for p in back { n += len(p); }
+    for p in back { n += p:len(); }
     var acc = "";
     for i in 0..20000 { acc = acc + "x"; }
-    n + len(acc)
+    n + acc:len()
 }
 print(run());

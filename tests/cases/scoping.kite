@@ -38,7 +38,7 @@ fn loops() {
     var out = [];
     for i in 0..3 {
         var tmp = i * 2;
-        for j in 0..2 { push(out, tmp + j); }
+        for j in 0..2 { out:push(tmp + j); }
     }
     out
 }

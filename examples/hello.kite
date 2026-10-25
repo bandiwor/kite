@@ -30,6 +30,6 @@ print(next_id(), next_id(), next_id());
 // Tables: arrays and dictionaries are the same type.
 const user = { name: "Ada", langs: ["kite", "rust"] };
 user.age = 36;
-push(user.langs, "c");
+user.langs:push("c");
 print(user);
 for i, lang in user.langs { print(i, lang); }

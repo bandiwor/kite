@@ -730,10 +730,23 @@ impl<'a> Parser<'a> {
     ///    start and in lambda bodies.
     ///
     /// Everything else (`{1}`, `{ f(x) }`, `{ var t = 1; t }`, …) is a block.
+    /// Are the tokens at `i..i+4` written as `recv:name(` without spaces around the colon?
+    fn is_method_call_at(&self, i: usize) -> bool {
+        let t = |k: usize| self.toks[(self.pos + i + k).min(self.toks.len() - 1)];
+        let (recv, colon, name) = (t(0), t(1), t(2));
+        colon.kind() == T::Colon
+            && name.kind() == T::Ident
+            && t(3).kind() == T::LParen
+            && recv.start as usize + recv.len() == colon.start as usize
+            && colon.start + 1 == name.start
+    }
+
     fn brace_is_table(&self, ctx: Brace) -> bool {
         match self.kind_at(1) {
             T::RBrace => ctx != Brace::Stmt,
             T::Ident => match self.kind_at(2) {
+                // `{ obj:method(..) ..}` (no spaces around the colon) is a block starting with a method call
+                T::Colon if self.is_method_call_at(1) => false,
                 T::Colon | T::Comma => true,
                 T::RBrace => {
                     ctx == Brace::Expr

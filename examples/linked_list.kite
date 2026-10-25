@@ -7,7 +7,7 @@ fn to_array(list) {
     const out = [];
     var cur = list;
     while cur != nil {
-        push(out, cur.value);
+        out:push(cur.value);
         cur = cur.next;
     }
     out

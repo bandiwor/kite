@@ -22,7 +22,7 @@ print(c, r);   // expect: Circle(5) Rect(3, 5)
 print(Shape.Point == Shape.Point, Shape.Circle(1) == Shape.Circle(1));   // expect: true false
 const ctor = Shape.Rect;
 print(ctor(1, 2));   // expect: Rect(1, 2)
-print(map([1, 2, 3], Shape.Circle));   // expect: [Circle(1), Circle(2), Circle(3)]
+print([1, 2, 3]:map(Shape.Circle));   // expect: [Circle(1), Circle(2), Circle(3)]
 
 // methods, operator hooks and destroy work like for structs
 impl Shape {
@@ -41,7 +41,7 @@ impl Shape {
 print(c:area(), r:area(), p:area());   // expect: 75 15 0
 print(Shape.Circle(2) == Shape.Rect(3, 4), Shape.Circle(1) == Shape.Circle(1));   // expect: true true
 print(Shape.Point < Shape.Circle(1), Shape.Circle(1) + Shape.Rect(2, 2));   // expect: true Rect(3, 4)
-print(len(Shape.Rect(2, 5)), Shape.area(Shape.Circle(3)));   // expect: 10 27
+print(Shape.Rect(2, 5):len(), Shape.area(Shape.Circle(3)));   // expect: 10 27
 
 // two independent unions may use the same variant names
 union Opt { None, Some(value) }

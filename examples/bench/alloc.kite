@@ -5,8 +5,8 @@ fn run() {
     for i in 0..2000000 {
         const t = { a: i, b: [i, i + 1] };
         total += t.b[1];
-        if i % 100000 == 0 { push(keep, t); }
+        if i % 100000 == 0 { keep:push(t); }
     }
-    total + len(keep)
+    total + keep:len()
 }
 print(run());
