@@ -1,2 +1,2 @@
-// error: unknown standard module 'std/nope' (available: std/fs, std/math)
+// error: unknown standard module 'std/nope' (available: std/fs, std/io, std/math)
 import "std/nope";

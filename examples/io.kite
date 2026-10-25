@@ -1,0 +1,18 @@
+// std/io: formatted output, stderr and prompts. Reading from stdin is shown in the
+// comments so that running the example never blocks:
+//
+//   while true {
+//       match io.prompt("> ") {
+//           Some(line) => io.writeln("you said: ", line),
+//           None => break,                       // end of input (Ctrl-D)
+//       }
+//   }
+//   const all = io.lines().unwrap();             // or read everything at once
+import "std/io";
+
+io.write("no", " ", "separator");
+io.write("\n");
+io.writeln("value = ", 42, ", list = ", [1, 2, 3]);
+io.print("print", "separates", "by spaces");
+io.eprint("(this line goes to stderr)");
+io.flush();

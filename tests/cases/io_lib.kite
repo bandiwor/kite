@@ -1,0 +1,13 @@
+// the io library: output (the stdin readers are covered by tests/io.rs)
+import "std/io";
+io.write("a", "b", 1);
+io.write("\n");   // expect: ab1
+io.writeln("x", 2, [1, nil]);   // expect: x2[1, nil]
+io.print("x", 2, [1, nil]);   // expect: x 2 [1, nil]
+print(io.flush());   // expect: Ok(nil)
+io.eprint("this goes to stderr");
+io.ewrite("so does this\n");
+io.write(io.write("n"), "\n");   // expect: nnil
+import "std/io" as out;
+out.write("no newline");
+out.write("\n");   // expect: no newline

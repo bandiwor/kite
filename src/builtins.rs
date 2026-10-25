@@ -33,6 +33,7 @@ pub fn install(vm: &mut Vm) {
     vm.define_native("destroy", 1, destroy);
 
     crate::fslib::install(vm);
+    crate::iolib::install(vm);
 
     let array = lib(
         vm,
